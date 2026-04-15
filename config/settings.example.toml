@@ -1,0 +1,33 @@
+[project]
+name = "intraday-auto-trading"
+timezone = "America/New_York"
+paper_trading = true
+currency = "USD"
+
+[symbols]
+pool = ["SPY", "QQQ", "AAPL", "MSFT"]
+
+[strategy]
+tracking_confirmation_bars = 2
+tracking_limit_price_factor = 1.01
+force_buy_last_minutes = 15
+opening_review_cutoff = "10:00"
+
+[selection]
+weak_tail_weight = 3.0
+range_track_weight = 2.0
+early_buy_weight = 1.0
+unbought_bonus = 2.0
+recent_fill_penalty_step = 0.5
+
+[ibkr]
+host = "127.0.0.1"
+port = 7497
+client_id = 9
+account_mode = "paper"
+
+[moomoo]
+enabled = true
+host = "127.0.0.1"
+port = 11111
+
