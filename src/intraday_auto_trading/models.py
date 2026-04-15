@@ -144,3 +144,73 @@ class TrackingDecision:
     limit_price: float | None
     lowest_close: float
     message: str
+
+
+class CapabilityStatus(str, Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    UNSUPPORTED = "unsupported"
+    UNTESTED = "untested"
+
+
+class SyncStatus(str, Enum):
+    SUCCESS = "success"
+    UNAVAILABLE = "unavailable"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class MarketDataType(str, Enum):
+    BARS = "bars"
+    BARS_1M = "bars_1m"
+    BARS_15M_DIRECT = "bars_15m_direct"
+    BARS_15M_DERIVED = "bars_15m_derived"
+    OPENING_IMBALANCE = "opening_imbalance"
+    OPTIONS = "options"
+
+
+@dataclass(slots=True)
+class ProviderCapability:
+    data_type: MarketDataType
+    status: CapabilityStatus
+    message: str = ""
+
+
+@dataclass(slots=True)
+class ProviderCapabilities:
+    provider: str
+    bars_1m: ProviderCapability
+    bars_15m_direct: ProviderCapability
+    bars_15m_derived: ProviderCapability
+    opening_imbalance: ProviderCapability
+    options: ProviderCapability
+
+    def for_data_type(self, data_type: MarketDataType) -> ProviderCapability:
+        mapping = {
+            MarketDataType.BARS_1M: self.bars_1m,
+            MarketDataType.BARS_15M_DIRECT: self.bars_15m_direct,
+            MarketDataType.BARS_15M_DERIVED: self.bars_15m_derived,
+            MarketDataType.OPENING_IMBALANCE: self.opening_imbalance,
+            MarketDataType.OPTIONS: self.options,
+        }
+        return mapping[data_type]
+
+
+@dataclass(slots=True)
+class SyncResult:
+    provider: str
+    symbol: str
+    data_type: MarketDataType
+    status: SyncStatus
+    saved_row_count: int = 0
+    message: str = ""
+
+
+@dataclass(slots=True)
+class SyncSummary:
+    provider_capabilities: list[ProviderCapabilities]
+    results: list[SyncResult]
+
+    def has_failures(self) -> bool:
+        return any(result.status is SyncStatus.FAILED for result in self.results)

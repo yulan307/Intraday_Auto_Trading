@@ -9,7 +9,8 @@ build/
 *.pyc
 *.pyo
 *.pyd
+*.sqlite
 *.sqlite3
 *.log
 .DS_Store
-
+config/settings.toml

@@ -20,14 +20,33 @@ early_buy_weight = 1.0
 unbought_bonus = 2.0
 recent_fill_penalty_step = 0.5
 
+[data]
+market_data_db = "data/market_data.sqlite"
+providers = ["ibkr", "moomoo"]
+data_types = ["bars", "opening_imbalance", "options"]
+enable_direct_15m = true
+enable_derived_15m = true
+
 [ibkr]
+default_profile = "paper"
+
+[ibkr.paper]
 host = "127.0.0.1"
-port = 7497
+port = 4002
 client_id = 9
-account_mode = "paper"
+account_id = ""
+readonly = true
+
+[ibkr.live]
+host = "127.0.0.1"
+port = 4001
+client_id = 9
+account_id = ""
+readonly = true
 
 [moomoo]
 enabled = true
 host = "127.0.0.1"
 port = 11111
-
+account_id = ""
+market = "US"
