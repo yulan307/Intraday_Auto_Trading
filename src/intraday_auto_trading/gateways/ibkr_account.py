@@ -452,7 +452,12 @@ class IBKRBrokerGateway:
             )
         self._require_available()
         with self._connected_app() as app:
-            app.cancelOrder(int(broker_order_id), "")
+            try:
+                # ibapi >= 10.19: cancelOrder(orderId, manualOrderCancelTime)
+                app.cancelOrder(int(broker_order_id), "")
+            except TypeError:
+                # older ibapi: cancelOrder(orderId)
+                app.cancelOrder(int(broker_order_id))
 
     def _build_order(self, instruction: OrderInstruction) -> IBOrder:
         order = IBOrder()
@@ -460,6 +465,8 @@ class IBKRBrokerGateway:
         order.totalQuantity = instruction.quantity
         order.tif = "DAY"
         order.transmit = True
+        order.eTradeOnly = False
+        order.firmQuoteOnly = False
         if self.profile.account_id:
             order.account = self.profile.account_id
         if instruction.limit_price is not None:
