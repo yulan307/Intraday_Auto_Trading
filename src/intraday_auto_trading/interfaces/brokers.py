@@ -4,10 +4,14 @@ from datetime import date, datetime
 from typing import Protocol, Sequence
 
 from intraday_auto_trading.models import (
+    AccountCapabilities,
+    AccountSummary,
     MinuteBar,
     OpeningImbalance,
     OptionQuote,
+    Order,
     OrderInstruction,
+    Position,
     ProviderCapabilities,
     SessionMetrics,
 )
@@ -64,6 +68,14 @@ class BrokerGateway(Protocol):
 
 
 class AccountGateway(Protocol):
+    def probe_capabilities(self) -> AccountCapabilities: ...
+
+    def get_account_summary(self) -> AccountSummary: ...
+
+    def get_positions(self) -> list[Position]: ...
+
+    def get_open_orders(self) -> list[Order]: ...
+
     def get_completed_orders_this_week(self, symbol: str) -> int: ...
 
     def has_open_position(self, symbol: str) -> bool: ...

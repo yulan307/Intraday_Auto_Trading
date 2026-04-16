@@ -53,11 +53,29 @@
 - **FetchResult**：记录每个 symbol 的来源（`db:ibkr` / `ibkr` / `moomoo` / `yfinance` / `none`）和 bar 数量
 - 两条链路共享同一 SQLite DB，回测获取的数据可被实盘链路复用
 
+### 8. 账户/订单 Gateway 实现（gateways/ibkr_account.py）
+
+- `IBKRAccountGateway`: 实现 `AccountGateway`，提供账户摘要、持仓查询、挂单查询
+  - `get_account_summary()` → `reqAccountSummary`（净值、现金、购买力）
+  - `get_positions()` → `reqPositions`
+  - `get_open_orders()` → `reqAllOpenOrders`
+  - `probe_capabilities()` → socket 连通性检测
+- `IBKRBrokerGateway`: 实现 `BrokerGateway`，提供下单与撤单
+  - `place_order(instruction)` → `placeOrder`（limit/market order）；需设置 `eTradeOnly=False`
+  - `cancel_order(broker_order_id)` → `cancelOrder`（兼容新旧 ibapi 版本）
+  - `readonly=True` 时在代码层直接拒绝，不触碰网络
+- 两个 gateway 各自使用独立 client_id（`account_client_id` / `broker_client_id`），避免与行情 gateway 冲突
+- CLI 入口：`show-account [--ibkr-profile paper|live]`
+
+注意：`place_order` / `cancel_order` 还受 IB Gateway 应用层 "Read-Only API" 配置控制（Configure → API → Settings），需在 IB Gateway 中关闭后方可使用。
+
 ## 当前实现边界
 
 - IBKR 与 Moomoo 真实 API 已接入，含能力探测、SQLite 持久化与 CLI 同步命令
 - yfinance 已接入作为回测第三候补，为 optional dep
 - 回测数据链路已实现（`fetch-bars` CLI），DB 缓存机制就位
+- IBKR 账户/持仓/挂单查询已实现并本地验证（paper 账户）
+- IBKR 下单/撤单已实现并本地验证（paper 账户，LMT 挂单→查询→撤单完整流程通过）
 - IBKR opening imbalance 已实现请求路径，但受 entitlement `10089` 限制，paper 环境不可用
 - IBKR 期权报价受 subscription `354` 限制，chain 发现可用，实时报价不可用
 - Moomoo opening imbalance 尚无已知公开 API，暂标记为不支持
@@ -67,8 +85,8 @@
 
 ## 推荐下一步
 
-1. 合并 `feat/backtest-data-pipeline` 和 `feat/ibkr-account-order-info` 到 main
-2. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+1. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+2. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
 3. 若以 Moomoo 为 bar 主源，补充独立的 Moomoo bar gateway
 4. 将趋势分类逻辑替换为文档定义的完整开盘主导模型
 5. 将 tracker 状态持久化到 SQLite 或 Redis，避免进程重启丢单

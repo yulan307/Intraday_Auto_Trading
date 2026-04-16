@@ -50,6 +50,8 @@ class IBKRProfileSettings:
     client_id: int
     account_id: str = ""
     readonly: bool = True
+    account_client_id: int = 10
+    broker_client_id: int = 11
 
 
 @dataclass(slots=True)
