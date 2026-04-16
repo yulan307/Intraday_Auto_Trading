@@ -6,8 +6,8 @@
 - Updated by: `Claude`
 - Current branch: `feat/ibkr-account-order-info`
 - Base branch: `main`
-- Remote status: branch not yet pushed / merged
-- Latest commit: `b45e6d9` `fix: use reqAllOpenOrders to reliably trigger openOrderEnd`
+- Remote status: pushed to `origin/feat/ibkr-account-order-info`
+- Latest commit: `23d0e4f` `fix: resolve order placement and cancellation issues in IBKRBrokerGateway`
 
 ## What Was Just Completed
 
@@ -55,13 +55,20 @@ Both gateways share a single `_IBAccountApp` EWrapper class and use independent 
 | `get_positions()` | ✅ Verified — returns empty list (paper account, no positions) |
 | `get_open_orders()` | ✅ Verified after fix — `reqAllOpenOrders` always triggers `openOrderEnd` |
 | `place_order` readonly guard | ✅ Verified — raises `RuntimeError` before any network call |
-| `place_order` / `cancel_order` real execution | ⚠️ Blocked — IB Gateway is configured as "Read-Only API" |
+| `place_order` (LMT order) | ✅ Verified — order reaches IBKR, status PreSubmitted |
+| `cancel_order` | ✅ Verified — order disappears from open orders after cancel |
 
-### Known blocker for place/cancel
+### Fixed bugs (this session)
 
-IB Gateway itself has a "Read-Only API" toggle (Configure → API → Settings).
-Even with `profile.readonly=False`, placing orders fails with IBKR error 321 while this toggle is on.
-Once disabled, the code path is correct and should work.
+| Bug | Fix |
+| --- | --- |
+| `place_order` → IBKR error 10268 | Added `order.eTradeOnly = False` and `order.firmQuoteOnly = False` to `_build_order`; IBOrder defaults these to True which IBKR rejects |
+| `cancel_order` → `TypeError: cancelOrder() takes 2 positional arguments but 3 were given` | Added try/except fallback: newer ibapi requires `cancelOrder(orderId, manualOrderCancelTime)`, older only `cancelOrder(orderId)` |
+
+### Previous blocker (resolved)
+
+IB Gateway "Read-Only API" toggle (Configure → API → Settings) must be **disabled** for place/cancel to work.
+This is separate from `profile.readonly` in code. Error 321 is the symptom when it is still enabled.
 
 ## Code State
 
@@ -76,8 +83,13 @@ Once disabled, the code path is correct and should work.
 ## Validation Status
 
 - `pytest` passes: `15 passed`
-- Real API verified: account summary, positions, open orders (paper account)
-- Real API not yet verified: place_order / cancel_order (blocked by IB Gateway read-only setting)
+- Real API verified (paper account, IB Gateway running):
+  - `get_account_summary()` ✅
+  - `get_positions()` ✅
+  - `get_open_orders()` ✅
+  - `place_order()` ✅ — LMT BUY, status PreSubmitted
+  - `cancel_order()` ✅ — order removed from open orders
+- Manual test script: `scripts/test_order_flow.py`
 
 ## Important Constraints
 
@@ -88,7 +100,7 @@ Once disabled, the code path is correct and should work.
 
 ## Best Next Steps For Claude
 
-1. Merge this branch into `main` after reviewing (and optionally verifying place/cancel with IB Gateway read-only disabled)
+1. Merge this branch into `main` (place/cancel fully verified, ready)
 2. Make `bars / session metrics` source configurable between IBKR and Moomoo
 3. Decide whether `session metrics` should remain provider-native or derived from bars and snapshots
 4. If Moomoo becomes the preferred bar source, add a dedicated Moomoo bar gateway
@@ -100,9 +112,13 @@ Once disabled, the code path is correct and should work.
 # Show account summary, positions, open orders
 python -m intraday_auto_trading.cli show-account --ibkr-profile paper
 
+# Full order flow test (place → query → cancel)
+python scripts/test_order_flow.py
+python scripts/test_order_flow.py --symbol AAPL --qty 1 --limit 1.00
+
 # Run all tests
 pytest
 
-# Sync market data (unchanged from previous branch)
+# Sync market data
 python -m intraday_auto_trading.cli sync-market-data --providers ibkr --symbols SPY QQQ --start 2026-04-14T09:30 --end 2026-04-14T10:00
 ```
