@@ -346,7 +346,7 @@ class IBKRAccountGateway:
         self._require_available()
         with self._connected_app() as app:
             req = app.register_open_orders_request()
-            app.reqOpenOrders()
+            app.reqAllOpenOrders()
             try:
                 if not req.done.wait(self.request_timeout_seconds):
                     raise RuntimeError("Timed out waiting for open orders.")
@@ -458,7 +458,10 @@ class IBKRBrokerGateway:
         order = IBOrder()
         order.action = "BUY"
         order.totalQuantity = instruction.quantity
-        order.account = self.profile.account_id
+        order.tif = "DAY"
+        order.transmit = True
+        if self.profile.account_id:
+            order.account = self.profile.account_id
         if instruction.limit_price is not None:
             order.orderType = "LMT"
             order.lmtPrice = instruction.limit_price
