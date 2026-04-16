@@ -7,6 +7,7 @@ from intraday_auto_trading.models import (
     MinuteBar,
     OpeningImbalance,
     OptionQuote,
+    Order,
     SessionMetrics,
     SymbolInfo,
     TrendSnapshot,
@@ -69,4 +70,8 @@ class BacktestAccountRepository(Protocol):
         initial_cash: float,
         config_snapshot: str,
     ) -> None: ...
+
+    def save_order(self, run_id: str, order: Order, strategy: str) -> None: ...
+
+    def load_orders(self, run_id: str) -> list[Order]: ...
 
