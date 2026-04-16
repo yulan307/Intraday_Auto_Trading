@@ -127,6 +127,72 @@ class SqliteMarketDataRepository(MarketDataRepository):
             for row in rows
         ]
 
+    def load_price_bars_with_source_priority(
+        self,
+        symbol: str,
+        bar_size: str,
+        start: datetime,
+        end: datetime,
+        source_priority: list[str],
+    ) -> tuple[list[MinuteBar], str]:
+        """Load bars, returning one bar per timestamp from the highest-priority source.
+
+        Returns a tuple of (bars, winning_source). winning_source is the source of the
+        first bar returned, or "" if no bars are found.
+        """
+        if not source_priority:
+            return [], ""
+
+        placeholders = ",".join("?" * len(source_priority))
+        priority_case = " ".join(
+            f"WHEN ? THEN {i + 1}" for i, _ in enumerate(source_priority)
+        )
+        params: list = (
+            [symbol, bar_size, to_storage_ts(start), to_storage_ts(end)]
+            + list(source_priority)
+            + list(source_priority)
+        )
+
+        with connect_sqlite(self.db_path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT ts, open, high, low, close, volume, source
+                FROM price_bars
+                WHERE symbol = ?
+                  AND bar_size = ?
+                  AND ts >= ?
+                  AND ts <= ?
+                  AND source IN ({placeholders})
+                ORDER BY ts ASC,
+                  CASE source {priority_case} ELSE 99 END ASC
+                """,
+                params,
+            ).fetchall()
+
+        if not rows:
+            return [], ""
+
+        seen_ts: set[str] = set()
+        bars: list[MinuteBar] = []
+        winning_source = rows[0]["source"]
+        for row in rows:
+            ts = row["ts"]
+            if ts in seen_ts:
+                continue
+            seen_ts.add(ts)
+            bars.append(
+                MinuteBar(
+                    timestamp=datetime.fromisoformat(ts),
+                    open=row["open"],
+                    high=row["high"],
+                    low=row["low"],
+                    close=row["close"],
+                    volume=row["volume"],
+                )
+            )
+
+        return bars, winning_source
+
     def save_session_metrics(self, metrics: SessionMetrics) -> None:
         with connect_sqlite(self.db_path) as connection:
             connection.execute(

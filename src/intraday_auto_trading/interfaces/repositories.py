@@ -34,6 +34,15 @@ class MarketDataRepository(Protocol):
         end: datetime,
     ) -> list[MinuteBar]: ...
 
+    def load_price_bars_with_source_priority(
+        self,
+        symbol: str,
+        bar_size: str,
+        start: datetime,
+        end: datetime,
+        source_priority: list[str],
+    ) -> tuple[list[MinuteBar], str]: ...
+
     def save_session_metrics(self, metrics: SessionMetrics) -> None: ...
 
     def save_opening_imbalance(self, imbalance: OpeningImbalance) -> None: ...
