@@ -39,13 +39,25 @@
 
 - `gateways/ibkr_market_data.py`: IBKR IB Gateway 适配器，提供 1m/15m bar、session metrics、开盘 imbalance（受 entitlement 限制）、期权链发现（期权报价受 subscription 限制）
 - `gateways/moomoo_options.py`: Moomoo OpenD 适配器，提供期权合约与快照；bar/snapshot 已本地验证，可扩展为 bar 主源
+- `gateways/yfinance_market_data.py`: yfinance 适配器，1m（7天内）和 15m（60天内）bar；options/imbalance 不支持；作为回测第三候补源
 - `services/market_data_sync.py`: 编排 provider 能力探测与数据同步，CLI 入口为 `sync-market-data`
 
 能力矩阵详见 `docs/market-data-capability-matrix.md`。
 
+### 7. 回测数据链路（services/backtest_data_service.py）
+
+与实盘 `sync-market-data` 并列的独立链路，CLI 入口为 `fetch-bars`：
+
+- **DB 优先**：调用 `load_price_bars_with_source_priority()` 按 ibkr→moomoo→yfinance 优先级去重读取
+- **Live fallback**：DB 无数据时按顺序尝试 ibkr → moomoo → yfinance，成功后写回 DB
+- **FetchResult**：记录每个 symbol 的来源（`db:ibkr` / `ibkr` / `moomoo` / `yfinance` / `none`）和 bar 数量
+- 两条链路共享同一 SQLite DB，回测获取的数据可被实盘链路复用
+
 ## 当前实现边界
 
 - IBKR 与 Moomoo 真实 API 已接入，含能力探测、SQLite 持久化与 CLI 同步命令
+- yfinance 已接入作为回测第三候补，为 optional dep
+- 回测数据链路已实现（`fetch-bars` CLI），DB 缓存机制就位
 - IBKR opening imbalance 已实现请求路径，但受 entitlement `10089` 限制，paper 环境不可用
 - IBKR 期权报价受 subscription `354` 限制，chain 发现可用，实时报价不可用
 - Moomoo opening imbalance 尚无已知公开 API，暂标记为不支持
@@ -55,8 +67,9 @@
 
 ## 推荐下一步
 
-1. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
-2. 若以 Moomoo 为 bar 主源，补充独立的 Moomoo bar gateway
-3. 将趋势分类逻辑替换为文档定义的完整开盘主导模型
-4. 将 tracker 状态持久化到 SQLite 或 Redis，避免进程重启丢单
-5. 增加回放测试，覆盖开盘强势、震荡、弱势拖尾三种场景
+1. 合并 `feat/backtest-data-pipeline` 和 `feat/ibkr-account-order-info` 到 main
+2. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+3. 若以 Moomoo 为 bar 主源，补充独立的 Moomoo bar gateway
+4. 将趋势分类逻辑替换为文档定义的完整开盘主导模型
+5. 将 tracker 状态持久化到 SQLite 或 Redis，避免进程重启丢单
+6. 增加回放测试，覆盖开盘强势、震荡、弱势拖尾三种场景

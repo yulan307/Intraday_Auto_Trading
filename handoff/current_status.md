@@ -3,22 +3,24 @@
 ## Snapshot
 
 - Date: `2026-04-16`
-- Updated by: `Codex`
-- Current branch: `main`
-- Remote status: `main` is in sync with `origin/main`
-- Latest merged commit: `3709321` `implement market data pipeline`
+- Updated by: `Claude`
+- Current branch: `feat/backtest-data-pipeline` (未合并，等待 review)
+- Remote status: 本地分支，尚未 push
+- Latest merged commit on main: `3709321` `implement market data pipeline`
 
 ## What Was Just Completed
 
-- Merged `feat/market-data-pipeline` into `main`
-- Pushed the merged result to `origin/main`
-- Added and verified the market data pipeline for:
-  - provider capability probing
-  - SQLite persistence
-  - CLI sync command
-  - `IBKR` via `IB Gateway`
-  - `Moomoo` via `OpenD`
-- Added project handoff and capability documents for the next agent
+### `feat/backtest-data-pipeline` — 回测数据链路
+
+实现了独立的回测数据获取链路，与实盘 `sync-market-data` 并列：
+
+- **`load_price_bars_with_source_priority()`**：repository 新增带优先级去重的读取方法，SQL 按 source 优先级排序，Python 端按 ts 去重，返回 `(bars, winning_source)`
+- **`YfinanceMarketDataGateway`**（`gateways/yfinance_market_data.py`）：yfinance 第三方 bar 数据源，含 `YfinanceBackend` Protocol 和 `RealYfinanceBackend`；1m 最近 7 天，15m 最近 60 天；options/imbalance 标记为 UNSUPPORTED
+- **`BacktestDataService`**（`services/backtest_data_service.py`）：DB 优先读取 → ibkr → moomoo → yfinance 顺序 fallback，成功拉取后立即写入 DB 缓存；`FetchResult` 记录每个 symbol 的来源与 bar 数量
+- **`YfinanceSettings`**（`config.py`）：新增 `enabled` 和 `request_timeout_seconds`，`[yfinance]` 节已同步写入 `settings.example.toml`
+- **`build_backtest_data_service()`**（`app.py`）：构建 BacktestDataService 的工厂函数
+- **CLI `fetch-bars`**（`cli.py`）：`--symbols`, `--bar-size`, `--start`, `--end`, `--ibkr-profile`；输出每行 `SYMBOL: N bars from <source>`
+- **测试**：`tests/test_yfinance_market_data.py`（11 项）、`tests/test_backtest_data_service.py`（9 项）；全套 30 tests 通过
 
 ## Key Documents To Read First
 
@@ -60,38 +62,40 @@
 
 ## Code State
 
-- Main market data entrypoint:
-  - `python -m intraday_auto_trading.cli sync-market-data`
-- Main implementation areas:
+- 实盘入口：`python -m intraday_auto_trading.cli sync-market-data`
+- 回测入口：`python -m intraday_auto_trading.cli fetch-bars`
+- 主要实现文件：
   - `src/intraday_auto_trading/cli.py`
   - `src/intraday_auto_trading/app.py`
   - `src/intraday_auto_trading/config.py`
-  - `src/intraday_auto_trading/models.py`
-  - `src/intraday_auto_trading/interfaces/brokers.py`
-  - `src/intraday_auto_trading/services/market_data_sync.py`
+  - `src/intraday_auto_trading/interfaces/repositories.py`
+  - `src/intraday_auto_trading/persistence/market_data_repository.py`
+  - `src/intraday_auto_trading/gateways/yfinance_market_data.py` ← 新增
+  - `src/intraday_auto_trading/services/backtest_data_service.py` ← 新增
   - `src/intraday_auto_trading/gateways/ibkr_market_data.py`
   - `src/intraday_auto_trading/gateways/moomoo_options.py`
 
 ## Validation Status
 
-- `pytest` passes
-- Latest verified result before handoff:
-  - `10 passed`
+- `pytest` passes — `30 passed`
+- 测试环境：Python 3.11，无需真实网络连接（所有 gateway 均可 fake backend 注入）
 
 ## Important Constraints
 
-- `config/settings.toml` is local-only and is ignored by git
-- `IBKR opening imbalance` is implemented but not usable without the required market data entitlement
-- `IBKR options` are not usable for live quotes until option market data subscriptions are enabled
-- `Moomoo opening imbalance` should be treated as unsupported until a confirmed public API path is found
+- `config/settings.toml` 本地私有，不入 git
+- yfinance 为 optional dep (`pip install -e ".[yfinance]"`)；未安装时 `probe_capabilities()` 返回 UNAVAILABLE，不抛异常
+- yfinance 1m bars 仅支持最近 7 天，15m bars 最近 60 天；回测更长历史区间须从 ibkr/moomoo 获取
+- `IBKR opening imbalance` 受 entitlement `10089` 限制，paper 环境不可用
+- `IBKR options` 受 subscription `354` 限制，chain 发现可用，实时报价不可用
+- `Moomoo opening imbalance` 暂无公开 API，标记为 UNSUPPORTED
 
 ## Best Next Steps For Claude
 
-1. Make the `bars / session metrics` source configurable between `IBKR` and `Moomoo`
-2. Decide whether `session metrics` should remain provider-native or may be derived from bars and snapshots
-3. Keep `opening imbalance` behind explicit capability checks and feature flags
-4. Keep `IBKR options` behind capability checks until subscriptions are available
-5. If `Moomoo` is selected as the preferred bar source, add a dedicated `Moomoo` bar gateway instead of routing only options through it
+1. 合并 `feat/backtest-data-pipeline` 到 main（需先确认 CI/tests 通过）
+2. 同步合并待 review 的 `feat/ibkr-account-order-info`（IBKRAccountGateway、IBKRBrokerGateway）
+3. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+4. 补充更长历史区间的 bar 回测数据源（Polygon.io 或直接从 IBKR 历史 API 拉取）
+5. 趋势分类逻辑替换为文档定义的完整开盘主导模型
 
 ## Useful Commands
 
@@ -99,6 +103,7 @@
 $env:PYTHONPATH='src'
 python -m intraday_auto_trading.cli show-config
 python -m intraday_auto_trading.cli sync-market-data --providers ibkr --symbols SPY QQQ --start 2026-04-14T09:30 --end 2026-04-14T10:00
-python -m intraday_auto_trading.cli sync-market-data --providers moomoo --symbols AAPL --end 2026-04-15T19:25
+python -m intraday_auto_trading.cli fetch-bars --symbols SPY --start 2026-04-15T09:30 --end 2026-04-15T10:00
+python -m intraday_auto_trading.cli fetch-bars --symbols SPY --bar-size 15m --start 2026-04-14T09:30 --end 2026-04-14T16:00
 pytest
 ```

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
@@ -75,6 +75,12 @@ class MoomooSettings:
 
 
 @dataclass(slots=True)
+class YfinanceSettings:
+    enabled: bool = True
+    request_timeout_seconds: int = 30
+
+
+@dataclass(slots=True)
 class Settings:
     project: ProjectSettings
     symbols: list[str]
@@ -83,6 +89,7 @@ class Settings:
     data: DataSettings
     ibkr: IBKRSettings
     moomoo: MoomooSettings
+    yfinance: YfinanceSettings = field(default_factory=YfinanceSettings)
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -97,6 +104,7 @@ def load_settings(path: str | Path) -> Settings:
         data=DataSettings(**raw.get("data", {})),
         ibkr=_parse_ibkr_settings(raw.get("ibkr", {})),
         moomoo=MoomooSettings(**raw.get("moomoo", _default_moomoo_dict())),
+        yfinance=YfinanceSettings(**raw.get("yfinance", {})),
     )
 
 

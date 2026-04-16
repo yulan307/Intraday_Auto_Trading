@@ -50,3 +50,7 @@ host = "127.0.0.1"
 port = 11111
 account_id = ""
 market = "US"
+
+[yfinance]
+enabled = true
+request_timeout_seconds = 30

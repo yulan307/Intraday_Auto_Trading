@@ -14,9 +14,10 @@ authors = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "yfinance>=0.2"]
 ibkr = ["ibapi>=9.81.1"]
 moomoo = ["moomoo-api>=8.7.0"]
+yfinance = ["yfinance>=0.2"]
 
 [project.scripts]
 intraday-auto-trading = "intraday_auto_trading.cli:main"

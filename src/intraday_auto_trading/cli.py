@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from intraday_auto_trading.app import build_market_data_sync_service
+from intraday_auto_trading.app import build_backtest_data_service, build_market_data_sync_service
 from intraday_auto_trading.config import load_settings
 from intraday_auto_trading.models import SyncStatus
 
@@ -29,6 +29,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument("--start", help="Start datetime in ISO format, for example 2026-04-15T09:30.")
     sync_parser.add_argument("--end", help="End datetime in ISO format, for example 2026-04-15T10:30.")
+
+    fetch_parser = subparsers.add_parser(
+        "fetch-bars",
+        help="Fetch OHLCV bars: DB first, then ibkr/moomoo/yfinance fallback.",
+    )
+    fetch_parser.add_argument("--symbols", nargs="+", help="Optional symbol override.")
+    fetch_parser.add_argument(
+        "--bar-size",
+        choices=["1m", "15m"],
+        default="1m",
+        help="Bar size to fetch (default: 1m).",
+    )
+    fetch_parser.add_argument(
+        "--ibkr-profile",
+        choices=["paper", "live"],
+        help="Override the configured IBKR profile for this run.",
+    )
+    fetch_parser.add_argument("--start", help="Start datetime in ISO format, for example 2026-04-15T09:30.")
+    fetch_parser.add_argument("--end", help="End datetime in ISO format, for example 2026-04-15T10:30.")
     return parser
 
 
@@ -58,6 +77,16 @@ def main() -> None:
         service = build_market_data_sync_service(settings, ibkr_profile_override=args.ibkr_profile)
         summary = service.sync_market_data(symbols=symbols, providers=providers, start=start, end=end)
         print_sync_summary(summary)
+        return
+
+    if args.command == "fetch-bars":
+        symbols = [symbol.upper() for symbol in (args.symbols or settings.symbols)]
+        start, end = resolve_window(args.start, args.end, settings.project.timezone)
+        service = build_backtest_data_service(settings, ibkr_profile_override=args.ibkr_profile)
+        results = service.get_bars(symbols=symbols, bar_size=args.bar_size, start=start, end=end)
+        print_fetch_results(results)
+        if all(r.source == "none" for r in results):
+            raise SystemExit(1)
         return
 
 
@@ -115,6 +144,12 @@ def print_sync_summary(summary) -> None:
 
     if all(result.status in {SyncStatus.UNAVAILABLE, SyncStatus.UNSUPPORTED, SyncStatus.SKIPPED} for result in summary.results):
         raise SystemExit(2)
+
+
+def print_fetch_results(results) -> None:
+    for result in results:
+        suffix = f" ({result.message})" if result.message else ""
+        print(f"  {result.symbol:<6}: {result.bar_count} bars from {result.source}{suffix}")
 
 
 if __name__ == "__main__":
