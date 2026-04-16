@@ -105,6 +105,45 @@ ON option_quotes (symbol, snapshot_ts);
 """
 
 
+BACKTEST_ACCOUNT_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    run_id TEXT PRIMARY KEY,
+    name TEXT,
+    symbols TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    initial_cash REAL NOT NULL,
+    config_snapshot TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backtest_orders (
+    order_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    action TEXT NOT NULL,
+    strategy TEXT,
+    total_qty REAL NOT NULL,
+    filled_qty REAL NOT NULL DEFAULT 0,
+    limit_price REAL,
+    avg_fill_price REAL,
+    status TEXT NOT NULL,
+    placed_at TEXT NOT NULL,
+    filled_at TEXT,
+    cancelled_at TEXT,
+    PRIMARY KEY (run_id, order_id),
+    FOREIGN KEY (run_id) REFERENCES backtest_runs (run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_orders_run_symbol
+ON backtest_orders (run_id, symbol);
+"""
+
+
 def create_market_data_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(MARKET_DATA_SCHEMA_SQL)
+
+
+def create_backtest_account_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(BACKTEST_ACCOUNT_SCHEMA_SQL)
 

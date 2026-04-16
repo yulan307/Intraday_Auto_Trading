@@ -13,6 +13,7 @@ from intraday_auto_trading.services.executor import ExecutionPlanner
 from intraday_auto_trading.services.market_data_sync import MarketDataSyncService
 from intraday_auto_trading.services.selector import SymbolSelector
 from intraday_auto_trading.services.trend_input_loader import BacktestTrendInputLoader, LiveTrendInputLoader
+from intraday_auto_trading.gateways.virtual_account import VirtualAccount
 
 
 class TradingWorkflow:
@@ -88,6 +89,14 @@ def build_backtest_trend_input_loader(
         session_open=session_open,
         bar_source_priority=bar_source_priority,
     )
+
+
+def build_virtual_account(
+    account_id: str = "VIRTUAL",
+    initial_cash: float = 100_000.0,
+) -> VirtualAccount:
+    """构造内存虚拟账户，同时满足 AccountGateway 和 BrokerGateway 协议。"""
+    return VirtualAccount(account_id=account_id, initial_cash=initial_cash)
 
 
 def build_backtest_data_service(

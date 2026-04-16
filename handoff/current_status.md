@@ -2,15 +2,28 @@
 
 ## Snapshot
 
-- Date: `2026-04-16`
+- Date: `2026-04-17`
 - Updated by: `Claude`
-- Current branch: `feat/trend-classifier-v2`
+- Current branch: `feat/backtest-virtual-account`
 - Remote status: not yet pushed
-- Latest commit: in-progress on trend classifier v2
+- Latest commit: in-progress on backtest virtual account
 
 ## What Was Just Completed
 
-### `feat/trend-classifier-v2` — 趋势判断模块（进行中）
+### `feat/backtest-virtual-account` — 虚拟账户模块（进行中）
+
+- **`VirtualAccount`**（`gateways/virtual_account.py`）：同时满足 `AccountGateway` + `BrokerGateway` 协议，纯内存运行
+  - `place_order()` / `cancel_order()` — 挂单/撤单
+  - `process_bar(symbol, bar)` — 自动撮合（MKT @ open，LMT @ limit_price when bar.low ≤ limit）
+  - `fill_order()` — 手动强制成交；`reset()` — 重置初始状态
+  - `get_account_summary()` / `get_positions()` / `get_open_orders()` 等完整 AccountGateway 接口
+- **`SqliteBacktestAccountRepository`**（`persistence/backtest_account_repository.py`）：持久化回测运行元数据和订单历史
+- **Schema 新增**（`persistence/schema.py`）：`backtest_runs`、`backtest_orders` 两张表
+- **协议完善**（`interfaces/repositories.py`）：`BacktestAccountRepository` 新增 `save_order()` / `load_orders()`
+- **`app.py`**：新增 `build_virtual_account()` 工厂方法
+- **测试**：`tests/test_virtual_account.py`（20 cases），全量 77 passed
+
+### `feat/trend-classifier-v2` — 趋势判断模块（已合并）
 
 - **`TrendClassifier`** 完全替换为量化评分模型（`services/trend_classifier.py`）
   - 价格信号（price_score）：open_change、vwap_bias、bar_slope、range_position 四个特征，加权合并
@@ -108,10 +121,10 @@
 
 ## Best Next Steps For Claude
 
-1. 合并 `feat/trend-classifier-v2` 到 main
-2. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
-3. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
-4. 在回测中标定分类阈值（当前初值：EARLY_BUY ≥ 0.25，WEAK_TAIL ≤ -0.20）
+1. 合并 `feat/backtest-virtual-account` 到 main
+2. 构建回测主循环（BacktestRunner）：用 `BacktestTrendInputLoader` + `TrendClassifier` + `VirtualAccount` 串联完整回测流程
+3. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
+4. 在回测中标定趋势分类阈值（当前初值：EARLY_BUY ≥ 0.25，WEAK_TAIL ≤ -0.20）
 5. 将 tracker 状态持久化到 SQLite 或 Redis，避免进程重启丢单
 6. Imbalance 数据可用后，为 TrendClassifier 增加第三路信号维度（接口已预留）
 
