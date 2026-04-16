@@ -43,9 +43,27 @@
 
 能力矩阵详见 `docs/market-data-capability-matrix.md`。
 
+### 7. 账户/订单 Gateway 实现（gateways/ibkr_account.py）
+
+- `IBKRAccountGateway`: 实现 `AccountGateway`，提供账户摘要、持仓查询、挂单查询
+  - `get_account_summary()` → `reqAccountSummary`（净值、现金、购买力）
+  - `get_positions()` → `reqPositions`
+  - `get_open_orders()` → `reqAllOpenOrders`
+  - `probe_capabilities()` → socket 连通性检测
+- `IBKRBrokerGateway`: 实现 `BrokerGateway`，提供下单与撤单
+  - `place_order(instruction)` → `placeOrder`（limit/market order）
+  - `cancel_order(broker_order_id)` → `cancelOrder`
+  - `readonly=True` 时在代码层直接拒绝，不触碰网络
+- 两个 gateway 各自使用独立 client_id（`account_client_id` / `broker_client_id`），避免与行情 gateway 冲突
+- CLI 入口：`show-account [--ibkr-profile paper|live]`
+
+注意：`place_order` / `cancel_order` 还受 IB Gateway 应用层 "Read-Only API" 配置控制（Configure → API → Settings），需在 IB Gateway 中关闭后方可使用。
+
 ## 当前实现边界
 
-- IBKR 与 Moomoo 真实 API 已接入，含能力探测、SQLite 持久化与 CLI 同步命令
+- IBKR 与 Moomoo 真实行情 API 已接入，含能力探测、SQLite 持久化与 CLI 同步命令
+- IBKR 账户/持仓/挂单查询已实现并本地验证（paper 账户）
+- IBKR 下单/撤单已实现，受限于 IB Gateway "Read-Only API" 配置，需手动关闭后可用
 - IBKR opening imbalance 已实现请求路径，但受 entitlement `10089` 限制，paper 环境不可用
 - IBKR 期权报价受 subscription `354` 限制，chain 发现可用，实时报价不可用
 - Moomoo opening imbalance 尚无已知公开 API，暂标记为不支持
