@@ -4,11 +4,27 @@
 
 - Date: `2026-04-16`
 - Updated by: `Claude`
-- Current branch: `main`
-- Remote status: in sync with `origin/main`
-- Latest commit: merge of `feat/ibkr-account-order-info` into main
+- Current branch: `feat/trend-classifier-v2`
+- Remote status: not yet pushed
+- Latest commit: in-progress on trend classifier v2
 
 ## What Was Just Completed
+
+### `feat/trend-classifier-v2` — 趋势判断模块（进行中）
+
+- **`TrendClassifier`** 完全替换为量化评分模型（`services/trend_classifier.py`）
+  - 价格信号（price_score）：open_change、vwap_bias、bar_slope、range_position 四个特征，加权合并
+  - 期权信号（option_score）：IV skew（call-put）、IV skew 变化、delta bias、IV 绝对水平变化
+  - Graceful degradation：iv/delta 为 None 时退化到 call/put mid 差；option_quotes 为空时纯价格驱动
+  - vol_surge 调节因子：首 bar 放量时自动上调价格信号权重
+- **`TrendInputLoader`** 新增（`services/trend_input_loader.py`）
+  - `LiveTrendInputLoader`：从 IBKR/Moomoo gateway 实时获取
+  - `BacktestTrendInputLoader`：从 SQLite 读取（DB 优先），metrics 缺失时从 bars 推算
+- **Repository 新增 read 方法**（`interfaces/repositories.py` + `persistence/market_data_repository.py`）
+  - `load_session_metrics(symbol, at_time)` → 取 at_time 前最近一条
+  - `load_option_quotes(symbol, start, end)` → 连接 option_contracts 表返回完整 OptionQuote 列表
+- **`app.py`** 新增 `build_live_trend_input_loader()` / `build_backtest_trend_input_loader()` 工厂方法
+- **测试**：`tests/test_trend_classifier.py` (12 cases) + `tests/test_trend_input_loader.py` (10 cases)，全量 57 passed
 
 ### `feat/backtest-data-pipeline` — 回测数据链路（已合并）
 
@@ -92,11 +108,12 @@
 
 ## Best Next Steps For Claude
 
-1. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+1. 合并 `feat/trend-classifier-v2` 到 main
 2. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
-3. 若以 Moomoo 为 bar 主源，补充独立的 Moomoo bar gateway
-4. 将趋势分类逻辑替换为文档定义的完整开盘主导模型
+3. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+4. 在回测中标定分类阈值（当前初值：EARLY_BUY ≥ 0.25，WEAK_TAIL ≤ -0.20）
 5. 将 tracker 状态持久化到 SQLite 或 Redis，避免进程重启丢单
+6. Imbalance 数据可用后，为 TrendClassifier 增加第三路信号维度（接口已预留）
 
 ## Useful Commands
 
