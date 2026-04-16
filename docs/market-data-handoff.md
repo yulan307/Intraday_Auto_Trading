@@ -2,7 +2,9 @@
 
 ## Branch
 
-- Current working branch: `feat/market-data-pipeline`
+- Current working branch: `main`
+- Merged source branch: `feat/market-data-pipeline`
+- Latest merged commit: `3709321` `implement market data pipeline`
 
 ## What Is Implemented
 
@@ -61,6 +63,12 @@
 3. Leave `opening imbalance` behind a clear feature flag until a usable broker entitlement or public API path is confirmed.
 4. Leave `IBKR options` behind capability probing until option subscriptions are available.
 5. If `Moomoo` becomes the preferred bar source, add a real `Moomoo` bar gateway alongside the current options gateway.
+
+## Current Merge State
+
+- The full market-data pipeline work has already been merged into `main`.
+- `main` is pushed and synced with `origin/main`.
+- The feature branch still exists, but it is no longer the integration branch of record.
 
 ## Useful Local Validation Commands
 
