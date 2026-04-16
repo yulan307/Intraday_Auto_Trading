@@ -216,6 +216,75 @@ class SqliteMarketDataRepository(MarketDataRepository):
                 ),
             )
 
+    def load_session_metrics(self, symbol: str, at_time: datetime) -> SessionMetrics | None:
+        """Return the most-recent session_metrics row for symbol at or before at_time."""
+        with connect_sqlite(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT symbol, ts, official_open, last_price, session_vwap, source
+                FROM session_metrics
+                WHERE symbol = ?
+                  AND ts <= ?
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                (symbol, to_storage_ts(at_time)),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return SessionMetrics(
+            symbol=row["symbol"],
+            timestamp=datetime.fromisoformat(row["ts"]),
+            source=row["source"],
+            official_open=row["official_open"],
+            last_price=row["last_price"],
+            session_vwap=row["session_vwap"],
+        )
+
+    def load_option_quotes(self, symbol: str, start: datetime, end: datetime) -> list[OptionQuote]:
+        """Return all option quotes for symbol with snapshot_ts in [start, end]."""
+        with connect_sqlite(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    oq.contract_id, oq.symbol, oq.snapshot_ts,
+                    oq.bid, oq.ask, oq.bid_size, oq.ask_size,
+                    oq.last, oq.volume, oq.iv, oq.delta, oq.gamma,
+                    oc.strike, oc.option_type, oc.expiry, oc.exchange, oc.multiplier
+                FROM option_quotes oq
+                JOIN option_contracts oc ON oc.contract_id = oq.contract_id
+                WHERE oq.symbol = ?
+                  AND oq.snapshot_ts >= ?
+                  AND oq.snapshot_ts <= ?
+                ORDER BY oq.snapshot_ts ASC
+                """,
+                (symbol, to_storage_ts(start), to_storage_ts(end)),
+            ).fetchall()
+
+        return [
+            OptionQuote(
+                symbol=row["symbol"],
+                strike=row["strike"],
+                side=row["option_type"],
+                bid=row["bid"] or 0.0,
+                ask=row["ask"] or 0.0,
+                bid_size=row["bid_size"] or 0,
+                ask_size=row["ask_size"] or 0,
+                last=row["last"] or 0.0,
+                volume=row["volume"] or 0,
+                iv=row["iv"],
+                delta=row["delta"],
+                gamma=row["gamma"],
+                contract_id=row["contract_id"],
+                expiry=row["expiry"],
+                exchange=row["exchange"],
+                multiplier=row["multiplier"],
+                snapshot_time=datetime.fromisoformat(row["snapshot_ts"]),
+            )
+            for row in rows
+        ]
+
     def save_opening_imbalance(self, imbalance: OpeningImbalance) -> None:
         with connect_sqlite(self.db_path) as connection:
             connection.execute(
