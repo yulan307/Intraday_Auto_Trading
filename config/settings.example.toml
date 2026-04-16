@@ -33,7 +33,9 @@ default_profile = "paper"
 [ibkr.paper]
 host = "127.0.0.1"
 port = 4002
-client_id = 9
+client_id = 9          # used by IBKRMarketDataGateway
+account_client_id = 10 # used by IBKRAccountGateway
+broker_client_id = 11  # used by IBKRBrokerGateway
 account_id = ""
 readonly = true
 
@@ -41,6 +43,8 @@ readonly = true
 host = "127.0.0.1"
 port = 4001
 client_id = 9
+account_client_id = 10
+broker_client_id = 11
 account_id = ""
 readonly = true
 

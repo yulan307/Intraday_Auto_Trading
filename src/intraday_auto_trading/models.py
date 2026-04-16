@@ -113,6 +113,50 @@ class TrendSnapshot:
 
 
 @dataclass(slots=True)
+class AccountSummary:
+    account_id: str
+    net_liquidation: float
+    cash_balance: float
+    buying_power: float
+    timestamp: datetime
+
+
+@dataclass(slots=True)
+class Position:
+    account_id: str
+    symbol: str
+    quantity: float
+    avg_cost: float
+    market_value: float
+    unrealized_pnl: float
+    realized_pnl: float
+    timestamp: datetime
+
+
+@dataclass(slots=True)
+class Order:
+    broker_order_id: str
+    account_id: str
+    symbol: str
+    action: str  # "BUY" / "SELL"
+    total_qty: float
+    filled_qty: float
+    remaining_qty: float
+    status: str  # "Submitted", "Filled", "Cancelled", etc.
+    limit_price: float | None
+    avg_fill_price: float
+    timestamp: datetime
+
+
+@dataclass(slots=True)
+class AccountCapabilities:
+    provider: str
+    account_summary: CapabilityStatus
+    positions: CapabilityStatus
+    open_orders: CapabilityStatus
+
+
+@dataclass(slots=True)
 class AccountSymbolState:
     symbol: str
     completed_orders_this_week: int = 0

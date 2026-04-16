@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from intraday_auto_trading.app import build_market_data_sync_service
 from intraday_auto_trading.config import load_settings
+from intraday_auto_trading.gateways.ibkr_account import IBKRAccountGateway
 from intraday_auto_trading.models import SyncStatus
 
 
@@ -29,6 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument("--start", help="Start datetime in ISO format, for example 2026-04-15T09:30.")
     sync_parser.add_argument("--end", help="End datetime in ISO format, for example 2026-04-15T10:30.")
+
+    account_parser = subparsers.add_parser(
+        "show-account",
+        help="Query and display IBKR account summary, positions, and open orders.",
+    )
+    account_parser.add_argument(
+        "--ibkr-profile",
+        choices=["paper", "live"],
+        help="Override the configured IBKR profile for this run.",
+    )
     return parser
 
 
@@ -58,6 +69,43 @@ def main() -> None:
         service = build_market_data_sync_service(settings, ibkr_profile_override=args.ibkr_profile)
         summary = service.sync_market_data(symbols=symbols, providers=providers, start=start, end=end)
         print_sync_summary(summary)
+        return
+
+    if args.command == "show-account":
+        profile_name, profile = settings.ibkr.resolve_profile(args.ibkr_profile)
+        gateway = IBKRAccountGateway(profile_name=profile_name, profile=profile)
+        capabilities = gateway.probe_capabilities()
+        print(f"[ibkr-{profile_name}] account_summary={capabilities.account_summary.value}  "
+              f"positions={capabilities.positions.value}  "
+              f"open_orders={capabilities.open_orders.value}")
+        from intraday_auto_trading.models import CapabilityStatus
+        if capabilities.account_summary is not CapabilityStatus.AVAILABLE:
+            print("IB Gateway is not reachable. Start IB Gateway and try again.")
+            raise SystemExit(1)
+        summary = gateway.get_account_summary()
+        print(f"\nAccount: {summary.account_id or profile.account_id}")
+        print(f"  Net liquidation : ${summary.net_liquidation:>14,.2f}")
+        print(f"  Cash balance    : ${summary.cash_balance:>14,.2f}")
+        print(f"  Buying power    : ${summary.buying_power:>14,.2f}")
+        positions = gateway.get_positions()
+        print(f"\nPositions ({len(positions)}):")
+        if positions:
+            print(f"  {'Symbol':<10} {'Qty':>10} {'Avg Cost':>12} {'Mkt Value':>12} {'Unreal PnL':>12}")
+            for pos in positions:
+                print(f"  {pos.symbol:<10} {pos.quantity:>10.2f} {pos.avg_cost:>12.4f} "
+                      f"{pos.market_value:>12.2f} {pos.unrealized_pnl:>12.2f}")
+        else:
+            print("  (none)")
+        orders = gateway.get_open_orders()
+        print(f"\nOpen orders ({len(orders)}):")
+        if orders:
+            print(f"  {'ID':<10} {'Symbol':<10} {'Action':<6} {'Qty':>8} {'Filled':>8} {'Status':<14} {'Limit':>10}")
+            for o in orders:
+                limit_str = f"{o.limit_price:.4f}" if o.limit_price is not None else "MKT"
+                print(f"  {o.broker_order_id:<10} {o.symbol:<10} {o.action:<6} "
+                      f"{o.total_qty:>8.0f} {o.filled_qty:>8.0f} {o.status:<14} {limit_str:>10}")
+        else:
+            print("  (none)")
         return
 
 
