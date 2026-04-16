@@ -12,7 +12,7 @@
 
 ## 当前仓库内容
 
-- `src/intraday_auto_trading/`: 项目源码骨架
+- `src/intraday_auto_trading/`: 项目源码
 - `config/settings.example.toml`: 配置模板
 - `docs/product-requirements.md`: 规范化产品需求文档
 - `docs/trend-classification-spec.md`: 规范化趋势分类接口文档
@@ -20,6 +20,9 @@
 - `docs/implementation-plan-data-backtest.md`: 数据落库与回测具体落地方案
 - `docs/architecture.md`: 模块拆分与责任说明
 - `docs/claude-handoff.md`: Codex 与 Claude 的 handoff 机制
+- `docs/market-data-pipeline-plan.md`: 市场数据 pipeline 落地方案
+- `docs/market-data-capability-matrix.md`: IBKR/Moomoo 数据能力矩阵
+- `docs/market-data-handoff.md`: 市场数据 pipeline 实现说明与 handoff
 - `docs/manual/`: 原始需求文档归档
 - `handoff/current_status.md`: 当前协作状态单一事实源
 - `.github/workflows/ci.yml`: GitHub Actions 基础 CI
@@ -32,6 +35,9 @@ src/intraday_auto_trading/
 ├── cli.py
 ├── config.py
 ├── models.py
+├── gateways/
+│   ├── ibkr_market_data.py
+│   └── moomoo_options.py
 ├── interfaces/
 │   ├── brokers.py
 │   └── repositories.py
@@ -41,6 +47,7 @@ src/intraday_auto_trading/
 │   └── sqlite_base.py
 └── services/
     ├── executor.py
+    ├── market_data_sync.py
     ├── selector.py
     ├── tracker.py
     └── trend_classifier.py
@@ -58,10 +65,11 @@ pytest
 
 ## 推荐开发顺序
 
-1. 接入 IBKR 与 Moomoo 的真实/模拟数据网关
-2. 实现 `backtest.sqlite` 与模拟 Broker
-3. 补齐开盘三分类的量化因子与评分逻辑
-4. 增加回测与 paper 交易联调
+1. ~~接入 IBKR 与 Moomoo 的真实/模拟数据网关~~ ✅ 已完成
+2. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+3. 实现 `backtest.sqlite` 与模拟 Broker
+4. 补齐开盘三分类的量化因子与评分逻辑
+5. 增加回测与 paper 交易联调
 
 ## GitHub 使用建议
 
