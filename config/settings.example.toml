@@ -4,8 +4,7 @@ timezone = "America/New_York"
 paper_trading = true
 currency = "USD"
 
-[symbols]
-pool = ["SPY", "QQQ", "AAPL", "MSFT"]
+# Symbol groups live in config/symbol_group.toml.
 
 [strategy]
 tracking_confirmation_bars = 2

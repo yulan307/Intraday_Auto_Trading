@@ -9,6 +9,7 @@ from intraday_auto_trading.app import build_backtest_data_service, build_market_
 from intraday_auto_trading.config import load_settings
 from intraday_auto_trading.gateways.ibkr_account import IBKRAccountGateway
 from intraday_auto_trading.models import SyncStatus
+from intraday_auto_trading.symbol_manager import SelectedSymbolGroup, prompt_for_symbol_group, resolve_symbols_for_run
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     config_path = Path("config/settings.toml")
+    symbol_groups_path = Path("config/symbol_group.toml")
     if not config_path.exists():
         print("Missing config/settings.toml. Copy config/settings.example.toml first.")
         return
@@ -75,24 +77,28 @@ def main() -> None:
         parser.print_help()
         return
 
-    settings = load_settings(config_path)
+    settings = load_settings(config_path, symbol_groups_path=symbol_groups_path)
 
     if args.command == "show-config":
         print_config(settings)
         return
 
     if args.command == "sync-market-data":
-        symbols = [symbol.upper() for symbol in (args.symbols or settings.symbols)]
+        selected_group = prompt_for_symbol_group(settings.symbol_groups)
+        symbols = resolve_symbols_for_run(selected_group, args.symbols)
         providers = [provider.lower() for provider in (args.providers or settings.data.providers)]
         start, end = resolve_window(args.start, args.end, settings.project.timezone)
+        print_selected_group(selected_group, symbols)
         service = build_market_data_sync_service(settings, ibkr_profile_override=args.ibkr_profile)
         summary = service.sync_market_data(symbols=symbols, providers=providers, start=start, end=end)
         print_sync_summary(summary)
         return
 
     if args.command == "fetch-bars":
-        symbols = [symbol.upper() for symbol in (args.symbols or settings.symbols)]
+        selected_group = prompt_for_symbol_group(settings.symbol_groups)
+        symbols = resolve_symbols_for_run(selected_group, args.symbols)
         start, end = resolve_window(args.start, args.end, settings.project.timezone)
+        print_selected_group(selected_group, symbols)
         service = build_backtest_data_service(settings, ibkr_profile_override=args.ibkr_profile)
         results = service.get_bars(symbols=symbols, bar_size=args.bar_size, start=start, end=end)
         print_fetch_results(results)
@@ -141,10 +147,23 @@ def main() -> None:
 def print_config(settings) -> None:
     print(f"Project: {settings.project.name}")
     print(f"Timezone: {settings.project.timezone}")
-    print(f"Symbols: {', '.join(settings.symbols)}")
+    print(f"Default symbol group: {settings.symbol_groups.default_group}")
+    print("Symbol groups:")
+    for group_name in settings.symbol_groups.list_names():
+        group = settings.symbol_groups.resolve(group_name)
+        print(
+            f"  {group.name}: symbols={', '.join(group.symbols)}; "
+            f"single_buy_amount={group.single_buy_amount:.2f}"
+        )
     print(f"Providers: {', '.join(settings.data.providers)}")
     print(f"Market data DB: {settings.data.market_data_db}")
     print(f"IBKR default profile: {settings.ibkr.default_profile}")
+def print_selected_group(selected_group: SelectedSymbolGroup, active_symbols: list[str]) -> None:
+    print(
+        f"Selected symbol group: {selected_group.name} | "
+        f"single_buy_amount={selected_group.single_buy_amount:.2f}"
+    )
+    print(f"Active symbols: {', '.join(active_symbols)}")
 
 
 def resolve_window(

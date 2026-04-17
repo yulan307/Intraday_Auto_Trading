@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
+from intraday_auto_trading.symbol_manager import SymbolGroupRegistry, load_symbol_groups
+
 
 @dataclass(slots=True)
 class StrategySettings:
@@ -85,6 +87,7 @@ class YfinanceSettings:
 @dataclass(slots=True)
 class Settings:
     project: ProjectSettings
+    symbol_groups: SymbolGroupRegistry
     symbols: list[str]
     strategy: StrategySettings
     selection: SelectionSettings
@@ -94,13 +97,21 @@ class Settings:
     yfinance: YfinanceSettings = field(default_factory=YfinanceSettings)
 
 
-def load_settings(path: str | Path) -> Settings:
-    with Path(path).open("rb") as handle:
+def load_settings(path: str | Path, symbol_groups_path: str | Path | None = None) -> Settings:
+    config_path = Path(path)
+    with config_path.open("rb") as handle:
         raw = tomllib.load(handle)
 
+    resolved_symbol_groups_path = (
+        Path(symbol_groups_path)
+        if symbol_groups_path is not None
+        else config_path.with_name("symbol_group.toml")
+    )
+    symbol_groups = load_symbol_groups(resolved_symbol_groups_path, raw)
     return Settings(
         project=ProjectSettings(**raw["project"]),
-        symbols=[symbol.upper() for symbol in raw["symbols"]["pool"]],
+        symbol_groups=symbol_groups,
+        symbols=symbol_groups.resolve().symbols,
         strategy=StrategySettings(**raw["strategy"]),
         selection=SelectionSettings(**raw["selection"]),
         data=DataSettings(**raw.get("data", {})),

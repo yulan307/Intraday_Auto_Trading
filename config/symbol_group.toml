@@ -1,0 +1,10 @@
+[symbol_groups]
+default_group = "core"
+
+[symbol_groups.groups.core]
+symbols = ["JEPI","JEPQ","SCHD","DGRW"]
+single_buy_amount = 400
+
+[symbol_groups.groups.commodities]
+symbols = ["XLE","PDBC","GLDM","MLPX"]
+single_buy_amount = 100
