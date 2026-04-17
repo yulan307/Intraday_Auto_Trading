@@ -2,13 +2,36 @@
 
 ## Snapshot
 
-- Date: `2026-04-17`
+- Date: `2026-04-16`
 - Updated by: `Claude`
-- Current branch: `test/backtest-chain-validation`
-- Remote status: pushed to `origin/test/backtest-chain-validation`
-- Feature commit: `2312d30` `validate backtest chain and broker fallbacks`
+- Current branch: `feat/data-pipeline-refactor`
+- Remote status: not yet pushed
+- Feature commit: pending
 
 ## What Was Just Completed
+
+### `feat/data-pipeline-refactor` — 数据链路统一重构（已完成）
+
+- **`DataFetchPolicy`**（`services/data_fetch_policy.py`，新增）：数据来源优先顺序统一配置
+  - `db_source_priority`：DB 内多来源排序，默认 `["ibkr", "moomoo", "yfinance"]`
+  - `live_source_order`：当日数据抓取顺序，默认 `["ibkr", "moomoo"]`；全部失败 → RuntimeError
+  - `history_source_order`：历史数据抓取顺序，默认 `["yfinance", "moomoo", "ibkr"]`；全部失败 → RuntimeError
+  - `ibkr_options_enabled`：IBKR 期权权限开关，默认 `False`（当前无 option 权限）
+  - `default_policy()` 工厂函数
+- **`TrendInputLoader`**（`services/trend_input_loader.py`，完全重写）：统一 Live + Backtest 双轨
+  - 废弃并删除 `LiveTrendInputLoader` + `BacktestTrendInputLoader`
+  - `load(symbol, eval_time)` → DB 优先；DB miss 时按 eval_time 自动判断 live vs historical
+  - `_is_live(eval_time)` — `eval_time` 的 ET 日期 ≥ 今日 ET 日期 → live
+  - options fetch：ibkr 跳过当 `ibkr_options_enabled=False`；全部失败返回 `[]`（不 raise）
+  - session metrics 兜底：所有 gateway 失败但 bars 可用 → 从 bars 推算 vwap/open/close
+  - 成功拉取后立即写入 DB 缓存
+- **`app.py`**：删除 `build_live_trend_input_loader()` + `build_backtest_trend_input_loader()`，新增单一 `build_trend_input_loader(settings, session_open, ibkr_profile_override, policy)`
+- **`services/backtest_chain_validation.py`**：`run()` 内改用 `TrendInputLoader`，从 `backtest_data_service` 的网关自动组装 gateways dict，删除硬编码 `source_priority`
+- **测试**：`tests/test_trend_input_loader.py` 完全重写（15 cases），覆盖 DB-hit、live/historical fallback、ibkr options skip、metrics 推算、DB write-back；全量 97 passed
+
+---
+
+## What Was Previously Completed
 
 ### `feat/backtest-virtual-account` — 虚拟账户模块（进行中）
 
@@ -121,11 +144,11 @@
 
 ## Best Next Steps For Claude
 
-1. 合并 `feat/backtest-virtual-account` 到 main
-2. 构建回测主循环（BacktestRunner）：用 `BacktestTrendInputLoader` + `TrendClassifier` + `VirtualAccount` 串联完整回测流程
-3. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
-4. 在回测中标定趋势分类阈值（当前初值：EARLY_BUY ≥ 0.25，WEAK_TAIL ≤ -0.20）
-5. 将 tracker 状态持久化到 SQLite 或 Redis，避免进程重启丢单
+1. 合并 `feat/data-pipeline-refactor` 到 main
+2. 合并 `feat/backtest-virtual-account` 到 main
+3. 构建回测主循环（BacktestRunner）：用 `TrendInputLoader` + `TrendClassifier` + `VirtualAccount` 串联完整回测流程
+4. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
+5. 在回测中标定趋势分类阈值（当前初值：EARLY_BUY ≥ 0.25，WEAK_TAIL ≤ -0.20）
 6. Imbalance 数据可用后，为 TrendClassifier 增加第三路信号维度（接口已预留）
 
 ## Useful Commands
@@ -168,19 +191,6 @@ pytest
 
 ## TODO
 
-- Separate live-trading and backtest data-source logic into different policies.
-- Fix the current mismatch where live validation, live sync, and backtest flows do not share the same source-selection model.
 - Tracking limit prices in the 15m low-follow module are still too aggressive/high and need separate tuning or a different pricing rule.
-- Define live-source policy explicitly:
-  - real-time trading input should use its own provider selection rules
-  - no accidental reuse of backtest fallback behavior
-- Define backtest-source policy explicitly:
-  - local DB cache first
-  - then broker and fallback sources only when appropriate for backtest
-  - validation commands must not silently override the default source policy without a clear reason
-- Review source priority independently for:
-  - bars
-  - session metrics
-  - option quotes
-  - opening imbalance
-- Refactor the entry points so source priority is configured in one place per runtime mode instead of being scattered across services.
+- Opening imbalance data is not yet integrated into TrendClassifier (interface slot reserved).
+- `feat/backtest-virtual-account` 分支尚未合并到 main（VirtualAccount + SqliteBacktestAccountRepository）。

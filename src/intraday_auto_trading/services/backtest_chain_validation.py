@@ -30,7 +30,7 @@ from intraday_auto_trading.services.executor import ExecutionPlanner
 from intraday_auto_trading.services.selector import SymbolSelector
 from intraday_auto_trading.services.tracker import FifteenMinuteTracker
 from intraday_auto_trading.services.trend_classifier import TrendClassifier
-from intraday_auto_trading.services.trend_input_loader import BacktestTrendInputLoader
+from intraday_auto_trading.services.trend_input_loader import TrendInputLoader
 
 
 TEST_TRADE_DATE = date(2026, 4, 16)
@@ -142,10 +142,17 @@ class BacktestChainValidationService:
         output_dir = self.output_root / TEST_TRADE_DATE.isoformat() / group_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        loader = BacktestTrendInputLoader(
+        gateways: dict[str, MarketDataGateway] = {}
+        if self.backtest_data_service.ibkr_gateway is not None:
+            gateways["ibkr"] = self.backtest_data_service.ibkr_gateway
+        if self.backtest_data_service.moomoo_gateway is not None:
+            gateways["moomoo"] = self.backtest_data_service.moomoo_gateway
+        if self.backtest_data_service.yfinance_gateway is not None:
+            gateways["yfinance"] = self.backtest_data_service.yfinance_gateway
+        loader = TrendInputLoader(
             repository=self.repository,
+            gateways=gateways,
             session_open=session_open,
-            bar_source_priority=["ibkr", "moomoo"],
         )
 
         results: list[SymbolValidationResult] = []

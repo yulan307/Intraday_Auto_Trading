@@ -12,10 +12,11 @@ from intraday_auto_trading.models import AccountSymbolState, SelectionResult, Tr
 from intraday_auto_trading.persistence.market_data_repository import SqliteMarketDataRepository
 from intraday_auto_trading.services.backtest_data_service import BacktestDataService
 from intraday_auto_trading.services.backtest_chain_validation import BacktestChainValidationService
+from intraday_auto_trading.services.data_fetch_policy import DataFetchPolicy, default_policy
 from intraday_auto_trading.services.executor import ExecutionPlanner
 from intraday_auto_trading.services.market_data_sync import MarketDataSyncService
 from intraday_auto_trading.services.selector import SymbolSelector
-from intraday_auto_trading.services.trend_input_loader import BacktestTrendInputLoader, LiveTrendInputLoader
+from intraday_auto_trading.services.trend_input_loader import TrendInputLoader
 from intraday_auto_trading.gateways.virtual_account import VirtualAccount
 
 
@@ -63,13 +64,22 @@ def build_market_data_sync_service(
     )
 
 
-def build_live_trend_input_loader(
+def build_trend_input_loader(
     settings: Settings,
     session_open: datetime,
     ibkr_profile_override: str | None = None,
-) -> LiveTrendInputLoader:
+    policy: DataFetchPolicy | None = None,
+) -> TrendInputLoader:
+    """Build the unified TrendInputLoader with all available market data gateways.
+
+    The loader applies DB-first caching and automatically selects live vs historical
+    source order based on whether eval_time falls on today (ET) or a past date.
+    Pass a custom policy to override default source priority rules.
+    """
     profile_name, ibkr_profile = settings.ibkr.resolve_profile(ibkr_profile_override)
-    gateway = IBKRMarketDataGateway(
+    repository = SqliteMarketDataRepository(settings.data.market_data_db)
+
+    ibkr_gw = IBKRMarketDataGateway(
         profile_name=profile_name,
         profile=ibkr_profile,
         backend=RealIBKRBackend(
@@ -78,19 +88,23 @@ def build_live_trend_input_loader(
         ),
         exchange_timezone=settings.project.timezone,
     )
-    return LiveTrendInputLoader(gateway=gateway, session_open=session_open)
+    moomoo_gw = MoomooMarketDataGateway(
+        settings.moomoo,
+        backend=RealMoomooBackend(settings.moomoo),
+    )
+    yfinance_backend = (
+        RealYfinanceBackend(request_timeout_seconds=settings.yfinance.request_timeout_seconds)
+        if settings.yfinance.enabled
+        else None
+    )
+    yfinance_gw = YfinanceMarketDataGateway(backend=yfinance_backend)
 
-
-def build_backtest_trend_input_loader(
-    settings: Settings,
-    session_open: datetime,
-    bar_source_priority: list[str] | None = None,
-) -> BacktestTrendInputLoader:
-    repository = SqliteMarketDataRepository(settings.data.market_data_db)
-    return BacktestTrendInputLoader(
+    gateways = {"ibkr": ibkr_gw, "moomoo": moomoo_gw, "yfinance": yfinance_gw}
+    return TrendInputLoader(
         repository=repository,
+        gateways=gateways,
         session_open=session_open,
-        bar_source_priority=bar_source_priority,
+        policy=policy or default_policy(),
     )
 
 
