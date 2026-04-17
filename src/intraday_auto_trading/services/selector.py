@@ -56,7 +56,9 @@ class SymbolSelector:
         )
         rationale = (
             f"{signal.reason} "
-            f"趋势权重={trend_score:.2f}, 未持仓加分={ownership_score:.2f}, 周内订单惩罚={frequency_penalty:.2f}。"
+            f"trend_weight={trend_score:.2f}, "
+            f"ownership_bonus={ownership_score:.2f}, "
+            f"frequency_penalty={frequency_penalty:.2f}"
         )
         return SelectionResult(
             symbol=signal.symbol,
@@ -65,4 +67,3 @@ class SymbolSelector:
             ranking_score=ranking_score,
             rationale=rationale,
         )
-

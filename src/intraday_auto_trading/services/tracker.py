@@ -24,7 +24,7 @@ class FifteenMinuteTracker:
                 should_cancel_order=True,
                 limit_price=None,
                 lowest_close=close_price,
-                message="发现新的最低 close，撤销旧限价单并继续跟踪。",
+                message="New lower close detected; cancel any working tracking order and reset the reference low.",
             )
 
         self.bars_since_low += 1
@@ -35,7 +35,7 @@ class FifteenMinuteTracker:
                 should_cancel_order=False,
                 limit_price=limit_price,
                 lowest_close=self.lowest_close,
-                message="连续多个 15m bar 未创新低，满足反弹确认，准备挂限价单。",
+                message="Confirmation bars completed after the session low; place a tracking limit order.",
             )
 
         return TrackingDecision(
@@ -43,11 +43,10 @@ class FifteenMinuteTracker:
             should_cancel_order=False,
             limit_price=None,
             lowest_close=self.lowest_close,
-            message="仍在观察是否确认反弹。",
+            message="Tracking is still waiting for enough confirmation bars after the low.",
         )
 
     def force_buy_price(self) -> float:
         if self.lowest_close is None:
             raise ValueError("lowest_close is not initialized")
         return round(self.lowest_close * self.limit_price_factor, 2)
-

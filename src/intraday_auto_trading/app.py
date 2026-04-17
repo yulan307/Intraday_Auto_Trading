@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 
 from intraday_auto_trading.config import Settings
 from intraday_auto_trading.gateways.ibkr_market_data import IBKRMarketDataGateway, RealIBKRBackend
@@ -9,6 +11,7 @@ from intraday_auto_trading.gateways.yfinance_market_data import RealYfinanceBack
 from intraday_auto_trading.models import AccountSymbolState, SelectionResult, TrendSignal
 from intraday_auto_trading.persistence.market_data_repository import SqliteMarketDataRepository
 from intraday_auto_trading.services.backtest_data_service import BacktestDataService
+from intraday_auto_trading.services.backtest_chain_validation import BacktestChainValidationService
 from intraday_auto_trading.services.executor import ExecutionPlanner
 from intraday_auto_trading.services.market_data_sync import MarketDataSyncService
 from intraday_auto_trading.services.selector import SymbolSelector
@@ -102,8 +105,11 @@ def build_virtual_account(
 def build_backtest_data_service(
     settings: Settings,
     ibkr_profile_override: str | None = None,
+    ibkr_client_id_offset: int = 0,
 ) -> BacktestDataService:
     profile_name, ibkr_profile = settings.ibkr.resolve_profile(ibkr_profile_override)
+    if ibkr_client_id_offset:
+        ibkr_profile = replace(ibkr_profile, client_id=ibkr_profile.client_id + ibkr_client_id_offset)
     repository = SqliteMarketDataRepository(settings.data.market_data_db)
 
     ibkr_gw = IBKRMarketDataGateway(
@@ -133,4 +139,31 @@ def build_backtest_data_service(
         ibkr_gateway=ibkr_gw,
         moomoo_gateway=moomoo_gw,
         yfinance_gateway=yfinance_gw,
+    )
+
+
+def build_backtest_chain_validation_service(
+    settings: Settings,
+    ibkr_profile_override: str | None = None,
+    output_root: str | Path | None = None,
+) -> BacktestChainValidationService:
+    backtest_data_service = build_backtest_data_service(
+        settings,
+        ibkr_profile_override=ibkr_profile_override,
+        ibkr_client_id_offset=90,
+    )
+    repository = SqliteMarketDataRepository(settings.data.market_data_db)
+    option_gateways = {
+        "ibkr": backtest_data_service.ibkr_gateway,
+        "moomoo": backtest_data_service.moomoo_gateway,
+    }
+    return BacktestChainValidationService(
+        repository=repository,
+        backtest_data_service=backtest_data_service,
+        option_gateways={name: gateway for name, gateway in option_gateways.items() if gateway is not None},
+        selector=SymbolSelector(settings.selection),
+        confirmation_bars=settings.strategy.tracking_confirmation_bars,
+        limit_price_factor=settings.strategy.tracking_limit_price_factor,
+        execution_planner=ExecutionPlanner(),
+        output_root=Path(output_root) if output_root is not None else Path("artifacts/backtest_chain_validation"),
     )

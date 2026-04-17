@@ -5,7 +5,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from intraday_auto_trading.app import build_backtest_data_service, build_market_data_sync_service
+from intraday_auto_trading.app import (
+    build_backtest_chain_validation_service,
+    build_backtest_data_service,
+    build_market_data_sync_service,
+)
 from intraday_auto_trading.config import load_settings
 from intraday_auto_trading.gateways.ibkr_account import IBKRAccountGateway
 from intraday_auto_trading.models import SyncStatus
@@ -50,6 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fetch_parser.add_argument("--start", help="Start datetime in ISO format, for example 2026-04-15T09:30.")
     fetch_parser.add_argument("--end", help="End datetime in ISO format, for example 2026-04-15T10:30.")
+
+    validate_parser = subparsers.add_parser(
+        "validate-backtest-chain",
+        help="Run the fixed 2026-04-16 10:00 ET backtest validation and export charts plus option CSV files.",
+    )
+    validate_parser.add_argument(
+        "--ibkr-profile",
+        choices=["paper", "live"],
+        help="Override the configured IBKR profile for this run.",
+    )
+    validate_parser.add_argument(
+        "--output-dir",
+        help="Optional output directory root. Defaults to artifacts/backtest_chain_validation.",
+    )
 
     account_parser = subparsers.add_parser(
         "show-account",
@@ -104,6 +122,18 @@ def main() -> None:
         print_fetch_results(results)
         if all(r.source == "none" for r in results):
             raise SystemExit(1)
+        return
+
+    if args.command == "validate-backtest-chain":
+        selected_group = prompt_for_symbol_group(settings.symbol_groups)
+        print_selected_group(selected_group, selected_group.symbols)
+        service = build_backtest_chain_validation_service(
+            settings,
+            ibkr_profile_override=args.ibkr_profile,
+            output_root=args.output_dir,
+        )
+        summary = service.run(group_name=selected_group.name, symbols=selected_group.symbols)
+        print_backtest_validation_summary(summary)
         return
 
     if args.command == "show-account":
@@ -217,6 +247,38 @@ def print_fetch_results(results) -> None:
     for result in results:
         suffix = f" ({result.message})" if result.message else ""
         print(f"  {result.symbol:<6}: {result.bar_count} bars from {result.source}{suffix}")
+
+
+def print_backtest_validation_summary(summary) -> None:
+    print(f"Backtest validation date: {summary.trade_date.isoformat()}")
+    print(f"Window: {summary.session_open:%Y-%m-%d %H:%M} -> {summary.eval_time:%Y-%m-%d %H:%M}")
+    print(f"Output dir: {summary.output_dir}")
+    print(f"Selected symbol: {summary.selected_symbol or '(none)'}")
+    print(f"Selection CSV: {summary.selection_csv_path}")
+    print("results")
+    for result in summary.results:
+        chart_path = str(result.chart_path) if result.chart_path is not None else "(chart not created)"
+        fifteen_minute_chart_path = (
+            str(result.fifteen_minute_chart_path)
+            if result.fifteen_minute_chart_path is not None
+            else "(15m chart not created)"
+        )
+        trend_regime = result.trend_signal.regime.value if result.trend_signal is not None else "unavailable"
+        trend_score = f"{result.trend_signal.score:.4f}" if result.trend_signal is not None else "n/a"
+        tracking_low = (
+            f"{result.tracking_lowest_close:.2f}@{result.tracking_lowest_timestamp:%Y-%m-%d %H:%M}"
+            if result.tracking_lowest_close is not None and result.tracking_lowest_timestamp is not None
+            else "n/a"
+        )
+        suffix = f" | {result.message}" if result.message else ""
+        print(
+            f"  {result.symbol}: bars={result.bar_count} from {result.bar_source}; "
+            f"options={result.option_count} from {result.option_source}; "
+            f"signal={trend_regime} score={trend_score}; "
+            f"tracking={result.tracking_strategy} events={result.tracking_event_count} low={tracking_low}; "
+            f"15m={result.fifteen_minute_bar_count} from {result.fifteen_minute_source}; "
+            f"chart={chart_path}; 15m_chart={fifteen_minute_chart_path}; csv={result.option_csv_path}{suffix}"
+        )
 
 
 if __name__ == "__main__":
