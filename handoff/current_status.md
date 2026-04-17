@@ -6,7 +6,7 @@
 - Updated by: `Claude`
 - Current branch: `test/backtest-chain-validation`
 - Remote status: pushed to `origin/test/backtest-chain-validation`
-- Latest commit: `a910029` `update backtest validation handoff status`
+- Feature commit: `2312d30` `validate backtest chain and broker fallbacks`
 
 ## What Was Just Completed
 
