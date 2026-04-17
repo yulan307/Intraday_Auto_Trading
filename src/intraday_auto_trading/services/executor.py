@@ -18,7 +18,7 @@ class ExecutionPlanner:
             strategy=BuyStrategy.TRACKING_BUY,
             quantity=quantity,
             limit_price=limit_price,
-            rationale="15 分钟追踪确认反弹后的限价单。",
+            rationale="Tracking confirmation completed on the 15-minute chart; submit a limit order near the session low.",
         )
 
     def build_force_order(self, symbol: str, quantity: int, limit_price: float) -> OrderInstruction:
@@ -27,6 +27,5 @@ class ExecutionPlanner:
             strategy=BuyStrategy.FORCE_BUY,
             quantity=quantity,
             limit_price=limit_price,
-            rationale="最后 15 分钟兜底买入。",
+            rationale="The final buy window has started; submit the force-buy limit order.",
         )
-

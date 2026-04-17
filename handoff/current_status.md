@@ -4,9 +4,9 @@
 
 - Date: `2026-04-17`
 - Updated by: `Claude`
-- Current branch: `feat/backtest-virtual-account`
-- Remote status: not yet pushed
-- Latest commit: in-progress on backtest virtual account
+- Current branch: `test/backtest-chain-validation`
+- Remote status: pushed to `origin/test/backtest-chain-validation`
+- Feature commit: `2312d30` `validate backtest chain and broker fallbacks`
 
 ## What Was Just Completed
 
@@ -144,3 +144,43 @@ python scripts/test_order_flow.py
 # 测试
 pytest
 ```
+
+## Latest Validation Notes
+
+- `Moomoo` bars are now connected for both `1m` and direct `15m`, and validated against a live OpenD session.
+- `yfinance` single-symbol `15m` parsing was fixed so direct `yf.download` results now flow through the gateway correctly.
+- Backtest-chain validation now covers:
+  - `2026-04-16 09:30-10:00` TrendSignal generation
+  - selection diagnostics CSV output
+  - `2026-04-06` to `2026-04-10` 15m low-tracking validation
+- Full-session 15m tracking was validated with `Moomoo` as the working source:
+  - `JEPI`: `130` bars, `16` tracking events
+  - `JEPQ`: `130` bars, `17` tracking events
+  - `SCHD`: `130` bars, `16` tracking events
+  - `DGRW`: `130` bars, `14` tracking events
+- Validation artifacts were written under:
+  - `artifacts/backtest_chain_validation/2026-04-16/core_tracking_window_2026-04-06_2026-04-10_full_session/`
+- Current observed issue:
+  - tracking limit prices are still too high relative to the intended low-follow behavior
+- Focus for the next agent:
+  - separate live/backtest source policies
+  - tune the low-follow pricing rule before relying on tracking-order outputs
+
+## TODO
+
+- Separate live-trading and backtest data-source logic into different policies.
+- Fix the current mismatch where live validation, live sync, and backtest flows do not share the same source-selection model.
+- Tracking limit prices in the 15m low-follow module are still too aggressive/high and need separate tuning or a different pricing rule.
+- Define live-source policy explicitly:
+  - real-time trading input should use its own provider selection rules
+  - no accidental reuse of backtest fallback behavior
+- Define backtest-source policy explicitly:
+  - local DB cache first
+  - then broker and fallback sources only when appropriate for backtest
+  - validation commands must not silently override the default source policy without a clear reason
+- Review source priority independently for:
+  - bars
+  - session metrics
+  - option quotes
+  - opening imbalance
+- Refactor the entry points so source priority is configured in one place per runtime mode instead of being scattered across services.

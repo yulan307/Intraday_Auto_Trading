@@ -55,14 +55,7 @@ class RealYfinanceBackend:
 
         result: dict[str, list[MinuteBar]] = {}
 
-        if len(tickers) == 1:
-            # Single ticker: flat column names (Open, High, Low, Close, Volume)
-            symbol = tickers[0]
-            bars = _parse_flat_df(df, symbol)
-            if bars:
-                result[symbol] = bars
-        else:
-            # Multiple tickers: MultiIndex columns (field, symbol)
+        if getattr(df.columns, "nlevels", 1) > 1:
             for symbol in tickers:
                 try:
                     sub = df.xs(symbol, axis=1, level=1)
@@ -71,6 +64,11 @@ class RealYfinanceBackend:
                 bars = _parse_flat_df(sub, symbol)
                 if bars:
                     result[symbol] = bars
+        else:
+            symbol = tickers[0]
+            bars = _parse_flat_df(df, symbol)
+            if bars:
+                result[symbol] = bars
 
         return result
 

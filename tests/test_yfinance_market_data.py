@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from intraday_auto_trading.gateways.yfinance_market_data import (
+    RealYfinanceBackend,
     YfinanceMarketDataGateway,
     YfinanceBackend,
 )
@@ -112,6 +113,44 @@ def test_get_direct_fifteen_minute_bars_delegates_correctly() -> None:
     gw = YfinanceMarketDataGateway(backend=_CapturingBackend())
     gw.get_direct_fifteen_minute_bars("SPY", datetime(2026, 4, 15, 9, 30), datetime(2026, 4, 15, 10, 0))
     assert captured == ["15m"]
+
+
+def test_real_backend_parses_single_symbol_multiindex_dataframe() -> None:
+    import pandas as pd
+
+    index = pd.DatetimeIndex(
+        [
+            "2026-04-06 13:30:00+00:00",
+            "2026-04-06 13:45:00+00:00",
+        ]
+    )
+    columns = pd.MultiIndex.from_tuples(
+        [
+            ("Close", "SPY"),
+            ("High", "SPY"),
+            ("Low", "SPY"),
+            ("Open", "SPY"),
+            ("Volume", "SPY"),
+        ],
+        names=["Price", "Ticker"],
+    )
+    df = pd.DataFrame(
+        [
+            [656.75, 657.90, 655.52, 655.86, 4129542],
+            [658.53, 658.55, 656.70, 656.76, 1472466],
+        ],
+        index=index,
+        columns=columns,
+    )
+
+    backend = RealYfinanceBackend(30)
+
+    with patch("yfinance.download", return_value=df):
+        result = backend.fetch_bars(["SPY"], "15m", datetime(2026, 4, 6), datetime(2026, 4, 7))
+
+    assert "SPY" in result
+    assert len(result["SPY"]) == 2
+    assert result["SPY"][0].timestamp == datetime(2026, 4, 6, 13, 30)
 
 
 def test_get_option_quotes_returns_empty() -> None:
