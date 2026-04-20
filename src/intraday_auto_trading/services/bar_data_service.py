@@ -105,7 +105,8 @@ class BarDataService:
                 )
 
                 bars, source = self._fetch_and_save(
-                    symbol, bar_size, day_start_utc, day_end_utc, source_order
+                    symbol, bar_size, day_start_utc, day_end_utc, source_order,
+                    expected_bars=expected,
                 )
 
                 # Mark complete when we have enough bars OR all sources returned nothing
@@ -142,12 +143,22 @@ class BarDataService:
         start: datetime,
         end: datetime,
         source_order: list[str],
+        expected_bars: int = 0,
     ) -> tuple[list[MinuteBar], str]:
+        """Try each source in order; stop only when expected_bars are obtained.
+
+        Any partial result is persisted to DB immediately so it is not lost.
+        Returns the best (most bars) result across all sources tried.
+        If expected_bars=0, returns on the first non-empty result (legacy behaviour).
+        """
         gateways: dict[str, MarketDataGateway] = {}
         if self.ibkr_gateway is not None:
             gateways["ibkr"] = self.ibkr_gateway
         if self.moomoo_gateway is not None:
             gateways["moomoo"] = self.moomoo_gateway
+
+        best_bars: list[MinuteBar] = []
+        best_source: str = "none"
 
         for source_name in source_order:
             bars: list[MinuteBar] = []
@@ -162,9 +173,15 @@ class BarDataService:
             if bars:
                 self.repository.upsert_symbol(SymbolInfo(symbol=symbol))
                 self.repository.save_price_bars(symbol, bar_size, bars, source_name)
-                return bars, source_name
+                # Keep best result (most bars wins)
+                if len(bars) > len(best_bars):
+                    best_bars = bars
+                    best_source = source_name
+                # Stop early only when we have enough bars
+                if expected_bars > 0 and len(best_bars) >= expected_bars:
+                    break
 
-        return [], "none"
+        return best_bars, best_source
 
     def _fetch_from_gateway(
         self,

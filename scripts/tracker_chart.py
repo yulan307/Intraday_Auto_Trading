@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Sequence
+from zoneinfo import ZoneInfo
 
 import matplotlib
 
@@ -186,17 +187,27 @@ def _plot_candlesticks(ax, bars: Sequence[MinuteBar], bar_width_days: float) -> 
 
 def _render_day_panel(price_ax, vol_ax, payload: DayPayload) -> None:
     bars = payload.bars
-    times = [bar.timestamp for bar in bars]
+    # Bar timestamps are stored as UTC naive; shift to ET (EDT=UTC-4) for display
+    # and signal simulation so that force_buy_time comparisons use the same timezone.
+    _et_offset = timedelta(hours=4)  # EDT (UTC-4)
+    et_bars = [
+        MinuteBar(
+            timestamp=b.timestamp - _et_offset,
+            open=b.open, high=b.high, low=b.low, close=b.close, volume=b.volume,
+        )
+        for b in bars
+    ]
+    times = [b.timestamp for b in et_bars]
     bar_width = 0.8 / (24 * 60)
 
-    closes = [b.close for b in bars]
+    closes = [b.close for b in et_bars]
     ema5_series = _compute_ema_series(closes, EMA_CFG.ema_fast_span)
     ema20_series = _compute_ema_series(closes, EMA_CFG.ema_slow_span)
-    vwap_series = _build_vwap_series(bars)
-    prev_mid_series = _build_prev_mid_series(bars)
-    events = _simulate_v2_events(bars, payload.trade_date)
+    vwap_series = _build_vwap_series(et_bars)
+    prev_mid_series = _build_prev_mid_series(et_bars)
+    events = _simulate_v2_events(et_bars, payload.trade_date)
 
-    _plot_candlesticks(price_ax, bars, bar_width)
+    _plot_candlesticks(price_ax, et_bars, bar_width)
 
     price_ax.plot(times, ema5_series, color="#e91e63", linewidth=1.0, label="EMA5", alpha=0.85)
     price_ax.plot(times, ema20_series, color="#7b1fa2", linewidth=1.2, label="EMA20", alpha=0.85)
@@ -248,8 +259,8 @@ def _render_day_panel(price_ax, vol_ax, payload: DayPayload) -> None:
     price_ax.grid(True, alpha=0.2)
     price_ax.legend(loc="upper left", fontsize=7, ncol=4)
 
-    colors = ["#0a7f39" if bar.close >= bar.open else "#c0392b" for bar in bars]
-    vol_ax.bar(times, [bar.volume for bar in bars], width=bar_width, color=colors, alpha=0.8)
+    colors = ["#0a7f39" if bar.close >= bar.open else "#c0392b" for bar in et_bars]
+    vol_ax.bar(times, [bar.volume for bar in et_bars], width=bar_width, color=colors, alpha=0.8)
     vol_ax.set_ylabel("Vol", fontsize=7)
     vol_ax.grid(True, axis="y", alpha=0.2)
     vol_ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
@@ -318,14 +329,25 @@ def main() -> None:
     days = _trading_days(START_DATE, END_DATE)
     payloads_by_symbol: dict[str, list[DayPayload]] = {s: [] for s in SYMBOLS}
 
+    _et = ZoneInfo("America/New_York")
+    _utc = ZoneInfo("UTC")
     for symbol in SYMBOLS:
         all_bars = bars_by_symbol[symbol]
         for trade_date in days:
-            day_start = datetime.combine(trade_date, SESSION_OPEN)
-            day_end = datetime.combine(trade_date, SESSION_CLOSE)
+            # Build UTC boundaries for filtering (DB stores bars as UTC naive)
+            day_start_utc = (
+                datetime.combine(trade_date, SESSION_OPEN, tzinfo=_et)
+                .astimezone(_utc)
+                .replace(tzinfo=None)
+            )
+            day_end_utc = (
+                datetime.combine(trade_date, SESSION_CLOSE, tzinfo=_et)
+                .astimezone(_utc)
+                .replace(tzinfo=None)
+            )
             day_bars = [
                 b for b in all_bars
-                if day_start <= b.timestamp.replace(tzinfo=None) < day_end
+                if day_start_utc <= b.timestamp < day_end_utc
             ]
             print(f"  [{symbol}] {trade_date}: {len(day_bars)} bars")
             payloads_by_symbol[symbol].append(
