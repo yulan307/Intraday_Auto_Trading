@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Protocol, Sequence
 
 from intraday_auto_trading.models import (
+    DailyCoverage,
     MinuteBar,
     OpeningImbalance,
     OptionQuote,
@@ -55,6 +56,16 @@ class MarketDataRepository(Protocol):
     def save_option_quotes(self, quotes: Sequence[OptionQuote], source: str) -> None: ...
 
     def save_trend_snapshot(self, snapshot: TrendSnapshot) -> None: ...
+
+    def save_daily_coverage(self, coverage: DailyCoverage) -> None: ...
+
+    def load_daily_coverage(
+        self, symbol: str, bar_size: str, trade_date: str
+    ) -> DailyCoverage | None: ...
+
+    def load_daily_coverage_range(
+        self, symbols: list[str], bar_size: str, start_date: str, end_date: str
+    ) -> dict[tuple[str, str], DailyCoverage]: ...
 
 
 class BacktestAccountRepository(Protocol):

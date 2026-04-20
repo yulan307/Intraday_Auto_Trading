@@ -102,6 +102,21 @@ ON price_bars (symbol, bar_size, ts);
 
 CREATE INDEX IF NOT EXISTS idx_option_quotes_symbol_ts
 ON option_quotes (symbol, snapshot_ts);
+
+CREATE TABLE IF NOT EXISTS daily_coverage (
+    symbol        TEXT NOT NULL,
+    bar_size      TEXT NOT NULL,
+    trade_date    TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    expected_bars INTEGER NOT NULL,
+    actual_bars   INTEGER NOT NULL,
+    is_complete   INTEGER NOT NULL DEFAULT 0,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (symbol, bar_size, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_coverage_symbol_bar_size
+ON daily_coverage (symbol, bar_size, trade_date);
 """
 
 

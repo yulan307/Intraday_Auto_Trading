@@ -6,5 +6,5 @@ symbols = ["JEPI","JEPQ","SCHD","DGRW"]
 single_buy_amount = 400
 
 [symbol_groups.groups.commodities]
-symbols = ["XLE","PDBC","GLDM","MLPX"]
+symbols = ["PDBC","GLDM","DBC"]
 single_buy_amount = 100

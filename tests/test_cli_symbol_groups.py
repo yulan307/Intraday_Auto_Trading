@@ -50,8 +50,10 @@ def build_settings() -> Settings:
         symbol_groups=symbol_groups,
         symbols=symbol_groups.resolve().symbols,
         strategy=StrategySettings(
-            tracking_confirmation_bars=2,
-            tracking_limit_price_factor=1.01,
+            ema_fast_span=5,
+            ema_slow_span=20,
+            recent_high_lookback=3,
+            force_buy_minutes_before_close=15,
             force_buy_last_minutes=15,
             opening_review_cutoff="10:00",
         ),
