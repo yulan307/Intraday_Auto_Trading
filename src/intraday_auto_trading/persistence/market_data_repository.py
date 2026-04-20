@@ -5,6 +5,7 @@ from pathlib import Path
 
 from intraday_auto_trading.interfaces.repositories import MarketDataRepository
 from intraday_auto_trading.models import (
+    DailyCoverage,
     MinuteBar,
     OpeningImbalance,
     OptionQuote,
@@ -414,6 +415,90 @@ class SqliteMarketDataRepository(MarketDataRepository):
                     to_storage_ts(datetime.utcnow()),
                 ),
             )
+
+    def save_daily_coverage(self, coverage: DailyCoverage) -> None:
+        with connect_sqlite(self.db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO daily_coverage (
+                    symbol, bar_size, trade_date, source,
+                    expected_bars, actual_bars, is_complete, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, bar_size, trade_date) DO UPDATE SET
+                    source = excluded.source,
+                    expected_bars = excluded.expected_bars,
+                    actual_bars = excluded.actual_bars,
+                    is_complete = excluded.is_complete,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    coverage.symbol,
+                    coverage.bar_size,
+                    coverage.trade_date,
+                    coverage.source,
+                    coverage.expected_bars,
+                    coverage.actual_bars,
+                    int(coverage.is_complete),
+                    to_storage_ts(datetime.utcnow()),
+                ),
+            )
+
+    def load_daily_coverage(
+        self, symbol: str, bar_size: str, trade_date: str
+    ) -> DailyCoverage | None:
+        with connect_sqlite(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT symbol, bar_size, trade_date, source,
+                       expected_bars, actual_bars, is_complete
+                FROM daily_coverage
+                WHERE symbol = ? AND bar_size = ? AND trade_date = ?
+                """,
+                (symbol, bar_size, trade_date),
+            ).fetchone()
+        if row is None:
+            return None
+        return DailyCoverage(
+            symbol=row["symbol"],
+            bar_size=row["bar_size"],
+            trade_date=row["trade_date"],
+            source=row["source"],
+            expected_bars=row["expected_bars"],
+            actual_bars=row["actual_bars"],
+            is_complete=bool(row["is_complete"]),
+        )
+
+    def load_daily_coverage_range(
+        self, symbols: list[str], bar_size: str, start_date: str, end_date: str
+    ) -> dict[tuple[str, str], DailyCoverage]:
+        if not symbols:
+            return {}
+        placeholders = ",".join("?" * len(symbols))
+        with connect_sqlite(self.db_path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT symbol, bar_size, trade_date, source,
+                       expected_bars, actual_bars, is_complete
+                FROM daily_coverage
+                WHERE symbol IN ({placeholders})
+                  AND bar_size = ?
+                  AND trade_date BETWEEN ? AND ?
+                """,
+                (*symbols, bar_size, start_date, end_date),
+            ).fetchall()
+        result: dict[tuple[str, str], DailyCoverage] = {}
+        for row in rows:
+            key = (row["symbol"], row["trade_date"])
+            result[key] = DailyCoverage(
+                symbol=row["symbol"],
+                bar_size=row["bar_size"],
+                trade_date=row["trade_date"],
+                source=row["source"],
+                expected_bars=row["expected_bars"],
+                actual_bars=row["actual_bars"],
+                is_complete=bool(row["is_complete"]),
+            )
+        return result
 
     def _contract_id_for(self, quote: OptionQuote) -> str:
         if quote.contract_id:

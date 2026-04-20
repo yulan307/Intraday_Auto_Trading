@@ -2,195 +2,146 @@
 
 ## Snapshot
 
-- Date: `2026-04-16`
+- Date: `2026-04-20`
 - Updated by: `Claude`
-- Current branch: `feat/data-pipeline-refactor`
-- Remote status: not yet pushed
-- Feature commit: pending
+- Current branch: `feat/unified-bar-data-service` → merged to `main`
+- Remote status: pushed & merged
+
+---
 
 ## What Was Just Completed
 
-### `feat/data-pipeline-refactor` — 数据链路统一重构（已完成）
+### `feat/unified-bar-data-service` — 统一 Bar 数据服务重构
 
-- **`DataFetchPolicy`**（`services/data_fetch_policy.py`，新增）：数据来源优先顺序统一配置
-  - `db_source_priority`：DB 内多来源排序，默认 `["ibkr", "moomoo", "yfinance"]`
-  - `live_source_order`：当日数据抓取顺序，默认 `["ibkr", "moomoo"]`；全部失败 → RuntimeError
-  - `history_source_order`：历史数据抓取顺序，默认 `["yfinance", "moomoo", "ibkr"]`；全部失败 → RuntimeError
-  - `ibkr_options_enabled`：IBKR 期权权限开关，默认 `False`（当前无 option 权限）
-  - `default_policy()` 工厂函数
-- **`TrendInputLoader`**（`services/trend_input_loader.py`，完全重写）：统一 Live + Backtest 双轨
-  - 废弃并删除 `LiveTrendInputLoader` + `BacktestTrendInputLoader`
-  - `load(symbol, eval_time)` → DB 优先；DB miss 时按 eval_time 自动判断 live vs historical
-  - `_is_live(eval_time)` — `eval_time` 的 ET 日期 ≥ 今日 ET 日期 → live
-  - options fetch：ibkr 跳过当 `ibkr_options_enabled=False`；全部失败返回 `[]`（不 raise）
-  - session metrics 兜底：所有 gateway 失败但 bars 可用 → 从 bars 推算 vwap/open/close
-  - 成功拉取后立即写入 DB 缓存
-- **`app.py`**：删除 `build_live_trend_input_loader()` + `build_backtest_trend_input_loader()`，新增单一 `build_trend_input_loader(settings, session_open, ibkr_profile_override, policy)`
-- **`services/backtest_chain_validation.py`**：`run()` 内改用 `TrendInputLoader`，从 `backtest_data_service` 的网关自动组装 gateways dict，删除硬编码 `source_priority`
-- **测试**：`tests/test_trend_input_loader.py` 完全重写（15 cases），覆盖 DB-hit、live/historical fallback、ibkr options skip、metrics 推算、DB write-back；全量 97 passed
+#### 背景 / 动机
+
+`BacktestDataService._fetch_one()` 在 DB 有任何记录时就立即返回（不检查数量），导致部分数据（如 4/16 仅 30 bars）被误判为完整而不再补全。
+
+本次重构新增 `daily_coverage` 表追踪每日数据完整性，并将 live/backtest 数据获取统一为单一入口。
+
+#### 新增 / 改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/.../persistence/schema.py` | 新增 `daily_coverage` 表 |
+| `src/.../models.py` | 新增 `DailyCoverage` dataclass |
+| `src/.../interfaces/repositories.py` | 新增 `save/load/load_range` 三个 coverage 方法到 Protocol |
+| `src/.../persistence/market_data_repository.py` | 实现三个 coverage 方法（SQLite upsert / select） |
+| `src/.../services/bar_data_service.py` | **新建** — `BarDataService` 统一入口 |
+| `src/.../app.py` | 新增 `build_bar_data_service()` 工厂方法 |
+| `scripts/tracker_chart.py` | 改用 `build_bar_data_service` + `get_bars(date, date)` |
+| `scripts/backfill_daily_coverage.py` | **新建** — 一次性回填迁移脚本 |
+| `tests/test_bar_data_service.py` | **新建** — 6 个单元测试，全通过 |
+| `docs/architecture.md` | 第 7 节更新为 `BarDataService` 说明 |
+| `config/symbol_group.toml` | 修复全角逗号导致的 TOML 解析错误 |
+
+#### `daily_coverage` 语义
+
+```
+is_complete=1, actual_bars>0  → DB 数据完整，直接使用
+is_complete=1, actual_bars=0  → 确认该日无数据（未上市等）
+is_complete=0                 → 部分或未拉取，触发重新获取
+```
+
+#### `BarDataService.get_bars()` 接口
+
+```python
+get_bars(
+    symbols: list[str],
+    bar_size: str,          # "1m" / "15m" / "1d"
+    start_date: date,
+    end_date: date,
+) -> dict[str, list[MinuteBar]]
+```
+
+- bar_size < 1d 时自动使用当天完整交易时段（9:30–16:00 ET，转为 UTC 存储）
+- `trade_date >= today ET` → `live_source_order`（ibkr → moomoo）
+- `trade_date < today ET`  → `history_source_order`（yfinance → moomoo → ibkr）
+
+#### 迁移注意
+
+部署到新环境后，需运行一次 backfill：
+```bash
+PYTHONPATH=src python3 scripts/backfill_daily_coverage.py
+```
+已在本地 DB 执行，写入 47 条 coverage 记录。
+
+#### 测试结果
+
+```
+109 passed, 1 failed (pre-existing moomoo-api env issue), 0 new failures
+```
 
 ---
 
 ## What Was Previously Completed
 
-### `feat/backtest-virtual-account` — 虚拟账户模块（进行中）
+### `feat/ibkr-v2-signal` — V2 日内低点信号（已合并）
 
-- **`VirtualAccount`**（`gateways/virtual_account.py`）：同时满足 `AccountGateway` + `BrokerGateway` 协议，纯内存运行
-  - `place_order()` / `cancel_order()` — 挂单/撤单
-  - `process_bar(symbol, bar)` — 自动撮合（MKT @ open，LMT @ limit_price when bar.low ≤ limit）
-  - `fill_order()` — 手动强制成交；`reset()` — 重置初始状态
-  - `get_account_summary()` / `get_positions()` / `get_open_orders()` 等完整 AccountGateway 接口
-- **`SqliteBacktestAccountRepository`**（`persistence/backtest_account_repository.py`）：持久化回测运行元数据和订单历史
-- **Schema 新增**（`persistence/schema.py`）：`backtest_runs`、`backtest_orders` 两张表
-- **协议完善**（`interfaces/repositories.py`）：`BacktestAccountRepository` 新增 `save_order()` / `load_orders()`
-- **`app.py`**：新增 `build_virtual_account()` 工厂方法
-- **测试**：`tests/test_virtual_account.py`（20 cases），全量 77 passed
+- 删除 `FifteenMinuteTracker`，以 `IntradayLowSignalService` 替代
+- 新增 `services/intraday_low_signal.py`：`pullback_ok (close < ema20) AND reversal_ok (A|B|C)`
+- limit_price = `round(min(vwap, prev_bar_mid), 2)`
+- `scripts/tracker_chart.py`：1m K 线 + EMA5/EMA20/VWAP/PrevBarMid 参考线 + PLACE/FORCE 标注
 
-### `feat/trend-classifier-v2` — 趋势判断模块（已合并）
+### `feat/data-pipeline-refactor` — 数据链路统一重构（已合并）
 
-- **`TrendClassifier`** 完全替换为量化评分模型（`services/trend_classifier.py`）
-  - 价格信号（price_score）：open_change、vwap_bias、bar_slope、range_position 四个特征，加权合并
-  - 期权信号（option_score）：IV skew（call-put）、IV skew 变化、delta bias、IV 绝对水平变化
-  - Graceful degradation：iv/delta 为 None 时退化到 call/put mid 差；option_quotes 为空时纯价格驱动
-  - vol_surge 调节因子：首 bar 放量时自动上调价格信号权重
-- **`TrendInputLoader`** 新增（`services/trend_input_loader.py`）
-  - `LiveTrendInputLoader`：从 IBKR/Moomoo gateway 实时获取
-  - `BacktestTrendInputLoader`：从 SQLite 读取（DB 优先），metrics 缺失时从 bars 推算
-- **Repository 新增 read 方法**（`interfaces/repositories.py` + `persistence/market_data_repository.py`）
-  - `load_session_metrics(symbol, at_time)` → 取 at_time 前最近一条
-  - `load_option_quotes(symbol, start, end)` → 连接 option_contracts 表返回完整 OptionQuote 列表
-- **`app.py`** 新增 `build_live_trend_input_loader()` / `build_backtest_trend_input_loader()` 工厂方法
-- **测试**：`tests/test_trend_classifier.py` (12 cases) + `tests/test_trend_input_loader.py` (10 cases)，全量 57 passed
+- **`DataFetchPolicy`**：`db_source_priority` / `live_source_order` / `history_source_order`
+- **`TrendInputLoader`**：DB 优先，eval_time 自动判 live vs historical，session metrics 推算兜底
+- `app.py` 单一 `build_trend_input_loader()` 工厂方法
 
-### `feat/backtest-data-pipeline` — 回测数据链路（已合并）
+### `feat/backtest-virtual-account` — 虚拟账户模块（已完成，待合并）
 
-- **`load_price_bars_with_source_priority()`**：repository 新增带优先级去重的读取方法，SQL 按 source 优先级排序，Python 端按 ts 去重，返回 `(bars, winning_source)`
-- **`YfinanceMarketDataGateway`**（`gateways/yfinance_market_data.py`）：yfinance 第三方 bar 数据源，含 `YfinanceBackend` Protocol 和 `RealYfinanceBackend`；1m 最近 7 天，15m 最近 60 天；options/imbalance 标记为 UNSUPPORTED
-- **`BacktestDataService`**（`services/backtest_data_service.py`）：DB 优先读取 → ibkr → moomoo → yfinance 顺序 fallback，成功拉取后立即写入 DB 缓存；`FetchResult` 记录每个 symbol 的来源与 bar 数量
-- **`YfinanceSettings`**（`config.py`）：新增 `enabled` 和 `request_timeout_seconds`
-- **CLI `fetch-bars`**：`--symbols`, `--bar-size`, `--start`, `--end`, `--ibkr-profile`
+- `VirtualAccount`：纯内存，满足 `AccountGateway + BrokerGateway`，支持 `process_bar()` 自动撮合
+- `SqliteBacktestAccountRepository`：持久化回测运行元数据和订单历史
 
 ### `feat/ibkr-account-order-info` — 账户/订单 Gateway（已合并）
 
-- **`IBKRAccountGateway`**（`gateways/ibkr_account.py`）：账户摘要、持仓、挂单查询
-  - `get_account_summary()` / `get_positions()` / `get_open_orders()` 均已本地验证
-- **`IBKRBrokerGateway`**（`gateways/ibkr_account.py`）：下单与撤单
-  - `place_order()` / `cancel_order()` 完整流程本地验证（paper 账户，LMT BUY → PreSubmitted → 撤单成功）
-  - Bug 修复：`eTradeOnly=False` / `firmQuoteOnly=False`（避免 error 10268）；`cancelOrder` try/except 版本兼容
-- **CLI `show-account`**：显示账户摘要、持仓、挂单
-- **`scripts/test_order_flow.py`**：端到端手动测试脚本
+- `IBKRAccountGateway` + `IBKRBrokerGateway`：账户摘要、持仓、挂单、下单、撤单（paper 验证通过）
+
+---
 
 ## Key Documents To Read First
 
 1. `handoff/current_status.md`
 2. `docs/architecture.md`
 3. `docs/market-data-handoff.md`
-4. `docs/market-data-capability-matrix.md`
-5. `config/settings.example.toml`
+4. `config/settings.example.toml`
 
-## Verified Local Findings
+---
 
-### 账户/订单（paper account, IB Gateway running）
+## Code Entry Points
 
-| Feature | Status |
-| --- | --- |
-| `probe_capabilities()` | ✅ Verified |
-| `get_account_summary()` | ✅ Verified — net liquidation, cash, buying power |
-| `get_positions()` | ✅ Verified |
-| `get_open_orders()` | ✅ Verified — `reqAllOpenOrders` always triggers `openOrderEnd` |
-| `place_order()` (LMT) | ✅ Verified — order reaches IBKR, status PreSubmitted |
-| `cancel_order()` | ✅ Verified — order removed from open orders |
+```bash
+# 统一 bar 数据（实盘/回测共用）
+from intraday_auto_trading.app import build_bar_data_service
+svc = build_bar_data_service(settings)
+bars = svc.get_bars(["JEPI","JEPQ"], "1m", date(2026,4,13), date(2026,4,17))
 
-### 回测数据链路
+# 可视化分析图
+PYTHONPATH=src python3 scripts/tracker_chart.py
 
-| Feature | Status |
-| --- | --- |
-| DB hit (cached bars) | ✅ Verified via unit tests |
-| ibkr fallback + DB write | ✅ Verified via unit tests |
-| moomoo fallback | ✅ Verified via unit tests |
-| yfinance fallback | ✅ Verified via unit tests |
-| source priority dedup | ✅ Verified via unit tests |
+# 回填 daily_coverage（新环境首次运行）
+PYTHONPATH=src python3 scripts/backfill_daily_coverage.py
 
-## Code State
+# 全量测试
+python3 -m pytest --ignore=tests/test_moomoo_gateway.py
+```
 
-- 实盘行情入口：`python -m intraday_auto_trading.cli sync-market-data`
-- 回测数据入口：`python -m intraday_auto_trading.cli fetch-bars`
-- 账户查询入口：`python -m intraday_auto_trading.cli show-account`
-- 主要实现文件：
-  - `src/intraday_auto_trading/gateways/ibkr_market_data.py`
-  - `src/intraday_auto_trading/gateways/ibkr_account.py`
-  - `src/intraday_auto_trading/gateways/moomoo_options.py`
-  - `src/intraday_auto_trading/gateways/yfinance_market_data.py`
-  - `src/intraday_auto_trading/services/market_data_sync.py`
-  - `src/intraday_auto_trading/services/backtest_data_service.py`
-  - `src/intraday_auto_trading/persistence/market_data_repository.py`
-  - `src/intraday_auto_trading/cli.py`
-  - `src/intraday_auto_trading/app.py`
-
-## Validation Status
-
-- `pytest` passes（合并后预期 35 passed；需 `pytest` 确认）
-- Real API verified (paper account): account summary / positions / open orders / place / cancel ✅
-- Manual test script: `scripts/test_order_flow.py`
+---
 
 ## Important Constraints
 
 - `config/settings.toml` 本地私有，不入 git
-- `profile.readonly=True`（代码层）阻止下单/撤单，不触碰网络
-- IB Gateway 应用层 "Read-Only API" 开关（Configure → API → Settings）需关闭才能实际下单
-- `account_client_id=10` / `broker_client_id=11` 须与行情 gateway 的 `client_id=9` 不同，避免连接冲突
-- yfinance 为 optional dep（`pip install -e ".[yfinance]"`）；未安装时 `probe_capabilities()` 返回 UNAVAILABLE，不抛异常
+- `config/symbol_group.toml` 需保持 ASCII 标点（已修复全角逗号问题）
+- `BacktestDataService` 保留供 `BacktestChainValidationService` 使用，不影响现有链路
 - yfinance 1m bars 仅支持最近 7 天，15m bars 最近 60 天
 
-## Best Next Steps For Claude
+---
 
-1. 合并 `feat/data-pipeline-refactor` 到 main
-2. 合并 `feat/backtest-virtual-account` 到 main
-3. 构建回测主循环（BacktestRunner）：用 `TrendInputLoader` + `TrendClassifier` + `VirtualAccount` 串联完整回测流程
-4. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
-5. 在回测中标定趋势分类阈值（当前初值：EARLY_BUY ≥ 0.25，WEAK_TAIL ≤ -0.20）
-6. Imbalance 数据可用后，为 TrendClassifier 增加第三路信号维度（接口已预留）
+## Best Next Steps
 
-## Useful Commands
-
-```powershell
-$env:PYTHONPATH='src'
-# 行情同步
-python -m intraday_auto_trading.cli sync-market-data --providers ibkr --symbols SPY QQQ --start 2026-04-14T09:30 --end 2026-04-14T10:00
-# 回测数据
-python -m intraday_auto_trading.cli fetch-bars --symbols SPY --start 2026-04-15T09:30 --end 2026-04-15T10:00
-python -m intraday_auto_trading.cli fetch-bars --symbols SPY --bar-size 15m --start 2026-04-14T09:30 --end 2026-04-14T16:00
-# 账户查询
-python -m intraday_auto_trading.cli show-account --ibkr-profile paper
-# 下单/撤单端到端测试
-python scripts/test_order_flow.py
-# 测试
-pytest
-```
-
-## Latest Validation Notes
-
-- `Moomoo` bars are now connected for both `1m` and direct `15m`, and validated against a live OpenD session.
-- `yfinance` single-symbol `15m` parsing was fixed so direct `yf.download` results now flow through the gateway correctly.
-- Backtest-chain validation now covers:
-  - `2026-04-16 09:30-10:00` TrendSignal generation
-  - selection diagnostics CSV output
-  - `2026-04-06` to `2026-04-10` 15m low-tracking validation
-- Full-session 15m tracking was validated with `Moomoo` as the working source:
-  - `JEPI`: `130` bars, `16` tracking events
-  - `JEPQ`: `130` bars, `17` tracking events
-  - `SCHD`: `130` bars, `16` tracking events
-  - `DGRW`: `130` bars, `14` tracking events
-- Validation artifacts were written under:
-  - `artifacts/backtest_chain_validation/2026-04-16/core_tracking_window_2026-04-06_2026-04-10_full_session/`
-- Current observed issue:
-  - tracking limit prices are still too high relative to the intended low-follow behavior
-- Focus for the next agent:
-  - separate live/backtest source policies
-  - tune the low-follow pricing rule before relying on tracking-order outputs
-
-## TODO
-
-- Tracking limit prices in the 15m low-follow module are still too aggressive/high and need separate tuning or a different pricing rule.
-- Opening imbalance data is not yet integrated into TrendClassifier (interface slot reserved).
-- `feat/backtest-virtual-account` 分支尚未合并到 main（VirtualAccount + SqliteBacktestAccountRepository）。
+1. **构建 BacktestRunner**：用 `BarDataService` + `TrendInputLoader` + `VirtualAccount` 串联完整回测流程
+2. **合并 `feat/backtest-virtual-account`**：VirtualAccount 已完成，尚未并入 main
+3. **CLI `fetch-bars` 迁移**：将 `fetch-bars` 命令对接 `BarDataService`，替换旧 `BacktestDataService` 调用
+4. **接入实盘链路**：`IBKRAccountGateway` + `IBKRBrokerGateway` 接入 `app.py` / executor
+5. **Opening imbalance**：接口已预留，待 IBKR entitlement 或 Moomoo API 支持后接入 `TrendClassifier`

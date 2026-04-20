@@ -181,15 +181,6 @@ class OrderInstruction:
     rationale: str = ""
 
 
-@dataclass(slots=True)
-class TrackingDecision:
-    should_place_order: bool
-    should_cancel_order: bool
-    limit_price: float | None
-    lowest_close: float
-    message: str
-
-
 class CapabilityStatus(str, Enum):
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
@@ -249,6 +240,17 @@ class SyncResult:
     status: SyncStatus
     saved_row_count: int = 0
     message: str = ""
+
+
+@dataclass(slots=True)
+class DailyCoverage:
+    symbol: str
+    bar_size: str
+    trade_date: str   # "YYYY-MM-DD"
+    source: str
+    expected_bars: int
+    actual_bars: int
+    is_complete: bool
 
 
 @dataclass(slots=True)

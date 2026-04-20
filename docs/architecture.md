@@ -44,14 +44,22 @@
 
 能力矩阵详见 `docs/market-data-capability-matrix.md`。
 
-### 7. 回测数据链路（services/backtest_data_service.py）
+### 7. 统一 Bar 数据服务（services/bar_data_service.py）
 
-与实盘 `sync-market-data` 并列的独立链路，CLI 入口为 `fetch-bars`：
+**`BarDataService`** 是实盘与回测共用的统一 bar 数据入口，取代旧的 `BacktestDataService`：
 
-- **DB 优先**：调用 `load_price_bars_with_source_priority()` 按 ibkr→moomoo→yfinance 优先级去重读取
-- **Live fallback**：DB 无数据时按顺序尝试 ibkr → moomoo → yfinance，成功后写回 DB
-- **FetchResult**：记录每个 symbol 的来源（`db:ibkr` / `ibkr` / `moomoo` / `yfinance` / `none`）和 bar 数量
-- 两条链路共享同一 SQLite DB，回测获取的数据可被实盘链路复用
+- **统一接口**：`get_bars(symbols, bar_size, start_date, end_date) → dict[str, list[MinuteBar]]`
+  - 输入为 `date`（非 `datetime`），bar_size < 1d 时自动使用当天完整交易时段（9:30–16:00 ET）
+- **`daily_coverage` 表**：记录每个 `(symbol, bar_size, trade_date)` 的数据完整性状态
+  - `is_complete=1, actual_bars>0`：数据完整，直接从 DB 返回
+  - `is_complete=1, actual_bars=0`：已确认该日无数据（symbol 尚未上市等）
+  - `is_complete=0`：部分数据或未曾拉取，触发重新获取
+- **Live vs Historical 路由**：`trade_date >= today` 时走 `live_source_order`（ibkr→moomoo），历史日期走 `history_source_order`（yfinance→moomoo→ibkr）
+- **DB 写回**：成功拉取后立即持久化，并更新 `daily_coverage`
+- **`build_bar_data_service(settings)`**：`app.py` 中的工厂方法
+- **迁移脚本**：`scripts/backfill_daily_coverage.py`，一次性从现有 `price_bars` 回填 `daily_coverage`
+
+旧 `BacktestDataService` 保留供 `BacktestChainValidationService` 使用，不影响现有链路。
 
 ### 8. 账户/订单 Gateway 实现（gateways/ibkr_account.py）
 

@@ -11,8 +11,10 @@ from intraday_auto_trading.gateways.yfinance_market_data import RealYfinanceBack
 from intraday_auto_trading.models import AccountSymbolState, SelectionResult, TrendSignal
 from intraday_auto_trading.persistence.market_data_repository import SqliteMarketDataRepository
 from intraday_auto_trading.services.backtest_data_service import BacktestDataService
+from intraday_auto_trading.services.bar_data_service import BarDataService
 from intraday_auto_trading.services.backtest_chain_validation import BacktestChainValidationService
 from intraday_auto_trading.services.data_fetch_policy import DataFetchPolicy, default_policy
+from intraday_auto_trading.services.intraday_low_signal import IntradayLowConfig
 from intraday_auto_trading.services.executor import ExecutionPlanner
 from intraday_auto_trading.services.market_data_sync import MarketDataSyncService
 from intraday_auto_trading.services.selector import SymbolSelector
@@ -156,6 +158,46 @@ def build_backtest_data_service(
     )
 
 
+def build_bar_data_service(
+    settings: Settings,
+    ibkr_profile_override: str | None = None,
+) -> BarDataService:
+    """Build the unified BarDataService with DB-first caching and live/historical routing."""
+    profile_name, ibkr_profile = settings.ibkr.resolve_profile(ibkr_profile_override)
+    repository = SqliteMarketDataRepository(settings.data.market_data_db)
+
+    ibkr_gw = IBKRMarketDataGateway(
+        profile_name=profile_name,
+        profile=ibkr_profile,
+        backend=RealIBKRBackend(
+            profile=ibkr_profile,
+            exchange_timezone=settings.project.timezone,
+        ),
+        exchange_timezone=settings.project.timezone,
+    )
+
+    moomoo_gw = MoomooMarketDataGateway(
+        settings.moomoo,
+        backend=RealMoomooBackend(settings.moomoo),
+    )
+
+    yfinance_backend = (
+        RealYfinanceBackend(request_timeout_seconds=settings.yfinance.request_timeout_seconds)
+        if settings.yfinance.enabled
+        else None
+    )
+    yfinance_gw = YfinanceMarketDataGateway(backend=yfinance_backend)
+
+    return BarDataService(
+        repository=repository,
+        policy=default_policy(),
+        ibkr_gateway=ibkr_gw,
+        moomoo_gateway=moomoo_gw,
+        yfinance_gateway=yfinance_gw,
+        exchange_timezone=settings.project.timezone,
+    )
+
+
 def build_backtest_chain_validation_service(
     settings: Settings,
     ibkr_profile_override: str | None = None,
@@ -171,13 +213,18 @@ def build_backtest_chain_validation_service(
         "ibkr": backtest_data_service.ibkr_gateway,
         "moomoo": backtest_data_service.moomoo_gateway,
     }
+    ema_config = IntradayLowConfig(
+        ema_fast_span=settings.strategy.ema_fast_span,
+        ema_slow_span=settings.strategy.ema_slow_span,
+        recent_high_lookback=settings.strategy.recent_high_lookback,
+        force_buy_minutes_before_close=settings.strategy.force_buy_minutes_before_close,
+    )
     return BacktestChainValidationService(
         repository=repository,
         backtest_data_service=backtest_data_service,
         option_gateways={name: gateway for name, gateway in option_gateways.items() if gateway is not None},
         selector=SymbolSelector(settings.selection),
-        confirmation_bars=settings.strategy.tracking_confirmation_bars,
-        limit_price_factor=settings.strategy.tracking_limit_price_factor,
+        ema_config=ema_config,
         execution_planner=ExecutionPlanner(),
         output_root=Path(output_root) if output_root is not None else Path("artifacts/backtest_chain_validation"),
     )

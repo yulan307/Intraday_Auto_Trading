@@ -9,8 +9,10 @@ from intraday_auto_trading.symbol_manager import SymbolGroupRegistry, load_symbo
 
 @dataclass(slots=True)
 class StrategySettings:
-    tracking_confirmation_bars: int
-    tracking_limit_price_factor: float
+    ema_fast_span: int
+    ema_slow_span: int
+    recent_high_lookback: int
+    force_buy_minutes_before_close: int
     force_buy_last_minutes: int
     opening_review_cutoff: str
 

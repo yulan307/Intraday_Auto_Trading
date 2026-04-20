@@ -27,8 +27,8 @@ from intraday_auto_trading.models import (
 )
 from intraday_auto_trading.services.backtest_data_service import BacktestDataService
 from intraday_auto_trading.services.executor import ExecutionPlanner
+from intraday_auto_trading.services.intraday_low_signal import IntradayLowConfig, compute_intraday_low_signal
 from intraday_auto_trading.services.selector import SymbolSelector
-from intraday_auto_trading.services.tracker import FifteenMinuteTracker
 from intraday_auto_trading.services.trend_classifier import TrendClassifier
 from intraday_auto_trading.services.trend_input_loader import TrendInputLoader
 
@@ -111,8 +111,7 @@ class BacktestChainValidationService:
     backtest_data_service: BacktestDataService
     option_gateways: Mapping[str, MarketDataGateway]
     selector: SymbolSelector
-    confirmation_bars: int
-    limit_price_factor: float
+    ema_config: IntradayLowConfig
     execution_planner: ExecutionPlanner
     output_root: Path = Path("artifacts/backtest_chain_validation")
 
@@ -179,7 +178,7 @@ class BacktestChainValidationService:
                 fifteen_minute_bars,
                 fifteen_minute_source,
                 fifteen_minute_bar_count,
-            ) = self._load_opening_window_fifteen_minute_bars(
+            ) = self._load_opening_window_one_minute_bars(
                 symbol=symbol,
                 tracking_start=tracking_start,
                 tracking_end=tracking_end,
@@ -353,7 +352,7 @@ class BacktestChainValidationService:
         rows.sort(key=lambda row: (row.ranking_score is not None, row.ranking_score or -999999.0), reverse=True)
         return rows, selected_symbol
 
-    def _load_opening_window_fifteen_minute_bars(
+    def _load_opening_window_one_minute_bars(
         self,
         *,
         symbol: str,
@@ -363,7 +362,7 @@ class BacktestChainValidationService:
         combined_bars: list[MinuteBar] = []
         observed_sources: list[str] = []
         priority = ["ibkr_direct", "ibkr", "ibkr_derived", "moomoo", "yfinance"]
-        expected_regular_session_bars = 26
+        expected_regular_session_bars = 390
 
         current_date = tracking_start.date()
         while current_date <= tracking_end.date():
@@ -372,13 +371,13 @@ class BacktestChainValidationService:
                 day_end = datetime.combine(current_date, SESSION_CLOSE_TIME)
                 day_bars, day_source = self.repository.load_price_bars_with_source_priority(
                     symbol=symbol,
-                    bar_size="15m",
+                    bar_size="1m",
                     start=day_start,
                     end=day_end,
                     source_priority=priority,
                 )
                 if len(day_bars) < expected_regular_session_bars:
-                    refreshed_bars, refreshed_source = self._refresh_fifteen_minute_bars(
+                    refreshed_bars, refreshed_source = self._refresh_one_minute_bars(
                         symbol=symbol,
                         start=day_start,
                         end=day_end,
@@ -405,7 +404,7 @@ class BacktestChainValidationService:
         combined_bars.sort(key=lambda bar: bar.timestamp)
         return combined_bars, source_label, len(combined_bars)
 
-    def _refresh_fifteen_minute_bars(
+    def _refresh_one_minute_bars(
         self,
         *,
         symbol: str,
@@ -421,15 +420,15 @@ class BacktestChainValidationService:
 
         for source_name in source_priority:
             if source_name == "yfinance":
-                bars = self.backtest_data_service._fetch_from_yfinance(symbol, "15m", start, end)
+                bars = self.backtest_data_service._fetch_from_yfinance(symbol, "1m", start, end)
             else:
                 gateway = live_gateways.get(source_name)
                 if gateway is None:
                     continue
-                bars = self.backtest_data_service._fetch_from_gateway(gateway, symbol, "15m", start, end)
+                bars = self.backtest_data_service._fetch_from_gateway(gateway, symbol, "1m", start, end)
             if not bars:
                 continue
-            self.repository.save_price_bars(symbol, "15m", bars, source_name)
+            self.repository.save_price_bars(symbol, "1m", bars, source_name)
             return bars, source_name
         return [], "none"
 
@@ -452,51 +451,70 @@ class BacktestChainValidationService:
 
         for trade_date in sorted(bars_by_day):
             day_bars = bars_by_day[trade_date]
-            tracker = FifteenMinuteTracker(
-                confirmation_bars=self.confirmation_bars,
-                limit_price_factor=self.limit_price_factor,
-            )
-            active_order_price: float | None = None
 
-            lowest_bar = min(day_bars, key=lambda bar: bar.close)
+            lowest_bar = min(day_bars, key=lambda bar: bar.low)
             tracking_low_points.append(
                 TrackingLowPoint(
                     timestamp=lowest_bar.timestamp,
-                    close_price=lowest_bar.close,
+                    close_price=lowest_bar.low,
                 )
             )
 
-            for bar in day_bars:
-                decision = tracker.observe(bar.close)
+            session_close = datetime.combine(trade_date, SESSION_CLOSE_TIME)
+            force_buy_time = session_close - timedelta(
+                minutes=self.ema_config.force_buy_minutes_before_close
+            )
 
-                if decision.should_cancel_order and active_order_price is not None:
-                    events.append(
-                        TrackingEvent(
-                            timestamp=bar.timestamp,
-                            action="CANCEL",
-                            limit_price=active_order_price,
-                            bar_close=bar.close,
-                            reason=ascii_only_text(decision.message),
-                        )
-                    )
-                    active_order_price = None
+            already_bought_today = False
+            for idx in range(len(day_bars)):
+                result = compute_intraday_low_signal(
+                    bars=day_bars,
+                    current_idx=idx,
+                    force_buy_time=force_buy_time,
+                    already_bought_today=already_bought_today,
+                    config=self.ema_config,
+                )
 
-                if decision.should_place_order and decision.limit_price is not None and active_order_price is None:
+                if already_bought_today:
+                    continue
+
+                if result.signal == "buy_now":
+                    reversal_types = []
+                    if result.reversal_ok_a:
+                        reversal_types.append("A")
+                    if result.reversal_ok_b:
+                        reversal_types.append("B")
+                    if result.reversal_ok_c:
+                        reversal_types.append("C")
+                    reason = f"V2 buy_now reversal={'|'.join(reversal_types) or 'ok'}"
                     order = self.execution_planner.build_tracking_order(
                         symbol=symbol,
                         quantity=1,
-                        limit_price=decision.limit_price,
+                        limit_price=result.limit_price,
                     )
+                    events.append(
+                        TrackingEvent(
+                            timestamp=day_bars[idx].timestamp,
+                            action="PLACE",
+                            limit_price=order.limit_price,
+                            bar_close=day_bars[idx].close,
+                            reason=ascii_only_text(reason),
+                        )
+                    )
+                    already_bought_today = True
+
+                elif result.signal == "force_buy":
+                    bar = day_bars[idx]
                     events.append(
                         TrackingEvent(
                             timestamp=bar.timestamp,
                             action="PLACE",
-                            limit_price=order.limit_price,
+                            limit_price=bar.close,
                             bar_close=bar.close,
-                            reason=ascii_only_text(decision.message),
+                            reason="force_buy",
                         )
                     )
-                    active_order_price = order.limit_price
+                    already_bought_today = True
 
         return events, tracking_low_points
 
