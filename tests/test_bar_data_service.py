@@ -17,8 +17,8 @@ import tempfile
 import pytest
 
 from intraday_auto_trading.models import (
+    BarRequestLog,
     CapabilityStatus,
-    DailyCoverage,
     MarketDataType,
     MinuteBar,
     ProviderCapabilities,
@@ -49,6 +49,8 @@ class _FakeCapabilities:
 class StubGateway:
     """Gateway that returns a fixed set of bars on request."""
 
+    provider_name = "ibkr"
+
     def __init__(self, bars: list[MinuteBar], available: bool = True) -> None:
         self._bars = bars
         self._available = available
@@ -61,22 +63,63 @@ class StubGateway:
         self.call_count += 1
         return list(self._bars)
 
+    def get_daily_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        self.call_count += 1
+        return list(self._bars)
+
+
+class PartiallyFailingBatchGateway(StubGateway):
+    def __init__(self, bars: list[MinuteBar], failing_symbols: set[str]) -> None:
+        super().__init__(bars)
+        self.failing_symbols = failing_symbols
+
+    def get_minute_bars_batch(
+        self, symbols: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[MinuteBar]]:
+        raise RuntimeError("batch unavailable")
+
+    def get_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        self.call_count += 1
+        if symbol in self.failing_symbols:
+            raise RuntimeError(f"backend failure for {symbol}")
+        return list(self._bars)
+
 
 class StubYfinance:
-    """Yfinance stub."""
+    """Yfinance stub — implements batch API (mirrors real YfinanceMarketDataGateway)."""
 
     def __init__(self, bars: list[MinuteBar]) -> None:
         self._bars = bars
         self.call_count = 0
+        self.call_ranges: list[tuple[datetime, datetime]] = []
 
-    # BarDataService checks for yfinance_gateway attribute via _fetch_from_yfinance
-    def get_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+    def get_minute_bars_batch(
+        self, symbols: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[MinuteBar]]:
         self.call_count += 1
-        return list(self._bars)
+        self.call_ranges.append((start, end))
+        return {s: list(self._bars) for s in symbols}
+
+    def get_direct_fifteen_minute_bars_batch(
+        self, symbols: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[MinuteBar]]:
+        self.call_count += 1
+        self.call_ranges.append((start, end))
+        return {s: [] for s in symbols}
+
+    # Single-symbol fallbacks (used by code that doesn't detect batch capability)
+    def get_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        return self.get_minute_bars_batch([symbol], start, end).get(symbol, [])
 
     def get_direct_fifteen_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
-        self.call_count += 1
         return []
+
+    def get_daily_bars_batch(
+        self, symbols: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[MinuteBar]]:
+        self.call_count += 1
+        self.call_ranges.append((start, end))
+        return {s: list(self._bars) for s in symbols}
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +179,17 @@ HIST_DATE = date(2026, 4, 14)  # Monday
 
 
 def test_complete_coverage_uses_db_no_gateway_call(repo: SqliteMarketDataRepository) -> None:
-    """If daily_coverage says is_complete=True, bars come from DB, gateway not called."""
+    """If bar_request_log says success, bars come from DB and gateway is not called."""
     bars = _make_bars(HIST_DATE)
     repo.upsert_symbol(SymbolInfo(symbol="SPY"))
-    repo.save_price_bars("SPY", "1m", bars, "yfinance")
-    repo.save_daily_coverage(DailyCoverage(
+    repo.save_price_bars("SPY", "1m", bars, "ibkr")
+    repo.save_bar_request_log(BarRequestLog(
         symbol="SPY", bar_size="1m", trade_date=HIST_DATE.isoformat(),
-        source="yfinance", expected_bars=390, actual_bars=390, is_complete=True,
+        source="ibkr",
+        request_start_ts=datetime(2026, 4, 14, 13, 30),
+        request_end_ts=datetime(2026, 4, 14, 20, 0),
+        status="success",
+        expected_bars=390, actual_bars=390,
     ))
 
     yf_stub = StubYfinance([])
@@ -169,11 +216,63 @@ def test_incomplete_coverage_fetches_from_history_source(repo: SqliteMarketDataR
 
     assert len(result["SPY"]) == 390
     # Coverage should now be written
-    cov = repo.load_daily_coverage("SPY", "1m", HIST_DATE.isoformat())
-    assert cov is not None
-    assert cov.is_complete is True
-    assert cov.actual_bars == 390
-    assert cov.source == "yfinance"
+    log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.status == "success"
+    assert log.actual_bars == 390
+    assert log.source == "yfinance"
+
+
+def test_default_policy_uses_ibkr_for_history_date(repo: SqliteMarketDataRepository) -> None:
+    bars = _make_bars(HIST_DATE)
+    ibkr_stub = StubGateway(bars)
+    yf_stub = StubYfinance(bars)
+    svc = BarDataService(
+        repository=repo,
+        policy=DataFetchPolicy(),
+        ibkr_gateway=ibkr_stub,
+        moomoo_gateway=None,
+        yfinance_gateway=yf_stub,
+        exchange_timezone="America/New_York",
+    )
+
+    result = svc.get_bars(["SPY"], "1m", HIST_DATE, HIST_DATE)
+
+    assert len(result["SPY"]) == 390
+    assert ibkr_stub.call_count == 1
+    assert yf_stub.call_count == 0
+    log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.source == "ibkr"
+
+
+def test_source_order_override_can_force_ibkr_for_history_date(repo: SqliteMarketDataRepository) -> None:
+    """A caller-provided source order overrides history/live provider policy."""
+    bars = _make_bars(HIST_DATE)
+    ibkr_stub = StubGateway(bars)
+    yf_stub = StubYfinance(bars)
+    svc = BarDataService(
+        repository=repo,
+        policy=DataFetchPolicy(
+            db_source_priority=["yfinance", "ibkr"],
+            live_source_order=["yfinance"],
+            history_source_order=["yfinance"],
+        ),
+        ibkr_gateway=ibkr_stub,
+        moomoo_gateway=None,
+        yfinance_gateway=yf_stub,
+        exchange_timezone="America/New_York",
+    )
+
+    result = svc.get_bars(["SPY"], "1m", HIST_DATE, HIST_DATE, source_order=["ibkr"])
+
+    assert len(result["SPY"]) == 390
+    assert yf_stub.call_count == 0
+    assert ibkr_stub.call_count == 1
+    log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.status == "success"
+    assert log.source == "ibkr"
 
 
 def test_all_sources_empty_marks_complete_confirmed_no_data(repo: SqliteMarketDataRepository) -> None:
@@ -183,11 +282,54 @@ def test_all_sources_empty_marks_complete_confirmed_no_data(repo: SqliteMarketDa
     result = svc.get_bars(["SPY"], "1m", HIST_DATE, HIST_DATE)
 
     assert result["SPY"] == []
-    cov = repo.load_daily_coverage("SPY", "1m", HIST_DATE.isoformat())
-    assert cov is not None
-    assert cov.is_complete is True
-    assert cov.actual_bars == 0
-    assert cov.source == "none"
+    log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.status == "no_data"
+    assert log.actual_bars == 0
+    assert log.source == "none"
+
+
+def test_provider_exception_marks_failed_with_message_per_symbol(repo: SqliteMarketDataRepository) -> None:
+    bars = _make_bars(HIST_DATE)
+    ibkr_stub = PartiallyFailingBatchGateway(bars, failing_symbols={"QQQ"})
+    svc = BarDataService(
+        repository=repo,
+        policy=DataFetchPolicy(
+            db_source_priority=["ibkr"],
+            live_source_order=["ibkr"],
+            history_source_order=["ibkr"],
+        ),
+        ibkr_gateway=ibkr_stub,
+        moomoo_gateway=None,
+        yfinance_gateway=StubYfinance([]),
+        exchange_timezone="America/New_York",
+    )
+
+    result = svc.get_bars(["SPY", "QQQ"], "1m", HIST_DATE, HIST_DATE)
+
+    assert len(result["SPY"]) == 390
+    assert result["QQQ"] == []
+    spy_log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    qqq_log = repo.load_bar_request_log("QQQ", "1m", HIST_DATE.isoformat())
+    assert spy_log is not None
+    assert spy_log.status == "success"
+    assert qqq_log is not None
+    assert qqq_log.status == "failed"
+    assert qqq_log.message is not None
+    assert "backend failure for QQQ" in qqq_log.message
+
+
+def test_daily_bars_fetch_uses_daily_provider_method(repo: SqliteMarketDataRepository) -> None:
+    bars = _make_bars(HIST_DATE, n=1)
+    svc = _service(repo, ibkr_bars=bars, yfinance_bars=[])
+
+    result = svc.get_bars(["SPY"], "1d", HIST_DATE, HIST_DATE, source_order=["ibkr"])
+
+    assert len(result["SPY"]) == 1
+    log = repo.load_bar_request_log("SPY", "1d", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.status == "success"
+    assert log.source == "ibkr"
 
 
 def test_partial_fetch_marks_incomplete(repo: SqliteMarketDataRepository) -> None:
@@ -197,10 +339,10 @@ def test_partial_fetch_marks_incomplete(repo: SqliteMarketDataRepository) -> Non
 
     svc.get_bars(["SPY"], "1m", HIST_DATE, HIST_DATE)
 
-    cov = repo.load_daily_coverage("SPY", "1m", HIST_DATE.isoformat())
-    assert cov is not None
-    assert cov.is_complete is False
-    assert cov.actual_bars == 30
+    log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.status == "partial"
+    assert log.actual_bars == 30
 
 
 def test_multi_day_multi_symbol(repo: SqliteMarketDataRepository) -> None:
@@ -228,10 +370,10 @@ def test_multi_day_multi_symbol(repo: SqliteMarketDataRepository) -> None:
 
     result = svc.get_bars(["SPY", "QQQ"], "1m", date1, date2)
 
-    # Stub returns 390 bars per call; 2 days per symbol → each symbol accumulates 780 bars
+    # Stub returns 390 bars per symbol per call; 2 days → each symbol accumulates 780 bars
     assert len(result["SPY"]) == 780
     assert len(result["QQQ"]) == 780
-    assert yf_stub.call_count == 4     # 2 symbols × 2 days
+    assert yf_stub.call_count == 2     # 1 batch call per day (both symbols together)
 
 
 def test_second_call_uses_cache_no_gateway(repo: SqliteMarketDataRepository) -> None:
@@ -256,4 +398,94 @@ def test_second_call_uses_cache_no_gateway(repo: SqliteMarketDataRepository) -> 
     assert yf_stub.call_count == 1
 
     svc.get_bars(["SPY"], "1m", HIST_DATE, HIST_DATE)
+    assert yf_stub.call_count == 1
+
+
+def test_force_refresh_ignores_terminal_request_log(repo: SqliteMarketDataRepository) -> None:
+    bars = _make_bars(HIST_DATE)
+    repo.save_bar_request_log(BarRequestLog(
+        symbol="SPY", bar_size="1m", trade_date=HIST_DATE.isoformat(),
+        source="none",
+        request_start_ts=datetime(2026, 4, 14, 13, 30),
+        request_end_ts=datetime(2026, 4, 14, 20, 0),
+        status="no_data",
+        expected_bars=390, actual_bars=0,
+    ))
+    yf_stub = StubYfinance(bars)
+    svc = BarDataService(
+        repository=repo,
+        policy=DataFetchPolicy(
+            db_source_priority=["yfinance"],
+            live_source_order=["yfinance"],
+            history_source_order=["yfinance"],
+        ),
+        ibkr_gateway=None,
+        moomoo_gateway=None,
+        yfinance_gateway=yf_stub,
+        exchange_timezone="America/New_York",
+    )
+
+    result = svc.get_bars(["SPY"], "1m", HIST_DATE, HIST_DATE, force_refresh=True)
+
+    assert len(result["SPY"]) == 390
+    assert yf_stub.call_count == 1
+    log = repo.load_bar_request_log("SPY", "1m", HIST_DATE.isoformat())
+    assert log is not None
+    assert log.status == "success"
+
+
+def test_est_session_window_converts_to_utc(repo: SqliteMarketDataRepository) -> None:
+    trade_date = date(2026, 2, 2)
+    yf_stub = StubYfinance([])
+    svc = BarDataService(
+        repository=repo,
+        policy=DataFetchPolicy(
+            db_source_priority=["yfinance"],
+            live_source_order=["yfinance"],
+            history_source_order=["yfinance"],
+        ),
+        ibkr_gateway=None,
+        moomoo_gateway=None,
+        yfinance_gateway=yf_stub,
+        exchange_timezone="America/New_York",
+    )
+
+    svc.get_bars(["SPY"], "1m", trade_date, trade_date)
+
+    assert yf_stub.call_ranges == [
+        (datetime(2026, 2, 2, 14, 30), datetime(2026, 2, 2, 21, 0))
+    ]
+    log = repo.load_bar_request_log("SPY", "1m", trade_date.isoformat())
+    assert log is not None
+    assert log.request_start_ts == datetime(2026, 2, 2, 14, 30)
+    assert log.request_end_ts == datetime(2026, 2, 2, 21, 0)
+
+
+def test_edt_session_window_converts_to_utc(repo: SqliteMarketDataRepository) -> None:
+    trade_date = date(2026, 4, 16)
+    yf_stub = StubYfinance([])
+    svc = BarDataService(
+        repository=repo,
+        policy=DataFetchPolicy(
+            db_source_priority=["yfinance"],
+            live_source_order=["yfinance"],
+            history_source_order=["yfinance"],
+        ),
+        ibkr_gateway=None,
+        moomoo_gateway=None,
+        yfinance_gateway=yf_stub,
+        exchange_timezone="America/New_York",
+    )
+
+    svc.get_bars(["SPY"], "1m", trade_date, trade_date)
+
+    assert yf_stub.call_ranges == [
+        (datetime(2026, 4, 16, 13, 30), datetime(2026, 4, 16, 20, 0))
+    ]
+    log = repo.load_bar_request_log("SPY", "1m", trade_date.isoformat())
+    assert log is not None
+    assert log.request_start_ts == datetime(2026, 4, 16, 13, 30)
+    assert log.request_end_ts == datetime(2026, 4, 16, 20, 0)
+
+    svc.get_bars(["SPY"], "1m", trade_date, trade_date)
     assert yf_stub.call_count == 1  # still 1 — used DB on second call

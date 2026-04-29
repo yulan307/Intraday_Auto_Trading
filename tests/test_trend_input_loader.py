@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 from intraday_auto_trading.models import MinuteBar, OptionQuote, SessionMetrics
+from intraday_auto_trading.services.bar_metrics import compute_vwap_from_minute_bars
 from intraday_auto_trading.services.data_fetch_policy import DataFetchPolicy
 from intraday_auto_trading.services.trend_input_loader import TrendInputLoader
 
@@ -144,7 +145,7 @@ def test_db_hit_assembles_correct_trend_input() -> None:
     assert result.symbol == SYMBOL
     assert result.official_open == 100.0
     assert result.last_price == 100.4
-    assert result.session_vwap == 100.2
+    assert result.session_vwap == compute_vwap_from_minute_bars(BARS)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +372,22 @@ def test_session_metrics_derived_from_bars_when_no_gateway_data() -> None:
 
     assert result.official_open == BARS[0].open
     assert result.last_price == BARS[-1].close
+    assert result.session_vwap == compute_vwap_from_minute_bars(BARS)
+
+
+def test_session_metrics_ignore_provider_vwap_and_use_1m_bars() -> None:
+    repo = _repo(bars=BARS, metrics=METRICS)
+    loader = TrendInputLoader(
+        repository=repo,
+        gateways={},
+        session_open=HIST_SESSION_OPEN,
+    )
+
+    result = loader.load(SYMBOL, HIST_EVAL_TIME)
+
+    assert result.session_vwap == compute_vwap_from_minute_bars(BARS)
+    assert result.session_vwap != METRICS.session_vwap
+    repo.load_session_metrics.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

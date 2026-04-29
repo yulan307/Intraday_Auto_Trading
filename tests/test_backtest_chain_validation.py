@@ -174,15 +174,10 @@ def test_write_selection_diagnostics_csv_creates_file_with_selected_row(tmp_path
             regime="RANGE_TRACK_15M",
             signal_score=0.6283,
             signal_reason="balanced price action",
-            trend_weight=2.0,
-            completed_orders_this_week=0,
-            has_position=False,
-            ownership_bonus=2.0,
-            frequency_penalty=0.0,
-            ranking_score=4.6283,
+            dev20=-0.0123,
             strategy="TRACKING_BUY",
             selected=True,
-            selection_reason="balanced price action trend_weight=2.00, ownership_bonus=2.00, frequency_penalty=0.00",
+            selection_reason="balanced price action",
         )
     ]
 

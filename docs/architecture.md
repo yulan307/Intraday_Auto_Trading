@@ -1,5 +1,21 @@
 # Architecture Overview
 
+## 2026-04-28 Bar-Only Market Data Schema
+
+- Current `data/market_data.sqlite` stores only bar-related data:
+  - `symbols`
+  - `price_bars`
+  - `bar_request_log`
+- `bar_request_log` replaces the previous `daily_coverage` cache. It records `(symbol, bar_size, trade_date)`, source, UTC request window, status, expected bars, actual bars, and message.
+- `price_bars.ts`, `bar_request_log.request_start_ts`, and `bar_request_log.request_end_ts` are UTC-naive timestamps.
+- Exchange-local market sessions are built with `ZoneInfo("America/New_York")` and then converted to UTC-naive timestamps, so EST/EDT changes are handled by the IANA timezone database.
+- Current bar fetch defaults are fixed to IB Gateway (`ibkr`) for DB reads, live fetches, and historical fetches. `fetch-symbol-pool-data --bar-providers` is retained only as a compatibility option and only accepts `ibkr`.
+- `TrendInputLoader` derives `session_vwap`, official open, and last price from the loaded `1m` bars; provider session metric VWAP is not used in the current active path.
+- Provider exceptions are recorded as `bar_request_log.status='failed'` with the error message and are retried on later runs. Confirmed empty IBKR responses remain `no_data`.
+- `fetch-symbol-pool-data` fetches only `1m` and `1d` bars. Active fetch paths no longer create direct or derived `15m` bars.
+- `fetch-symbol-pool-data --force-refresh` ignores existing request-log rows for the requested window, which is useful when older `no_data` rows were produced by a provider or network failure.
+- Option quotes, session metrics, opening imbalance, and trend snapshots are not part of the current market-data database. Older data for those tables is preserved only in the backup database created before this migration.
+
 ## 模块拆分
 
 ### 1. 交易日触发
@@ -54,8 +70,8 @@
   - `is_complete=1, actual_bars>0`：数据完整，直接从 DB 返回
   - `is_complete=1, actual_bars=0`：已确认该日无数据（symbol 尚未上市等）
   - `is_complete=0`：部分数据或未曾拉取，触发重新获取
-- **Live vs Historical 路由**：`trade_date >= today` 时走 `live_source_order`（ibkr→moomoo），历史日期走 `history_source_order`（yfinance→moomoo→ibkr）
-- **DB 写回**：成功拉取后立即持久化，并更新 `daily_coverage`
+- **Live vs Historical 路由**：当前默认 `live_source_order` 与 `history_source_order` 都固定为 `["ibkr"]`
+- **DB 写回**：成功拉取后立即持久化，并更新 `bar_request_log`
 - **`build_bar_data_service(settings)`**：`app.py` 中的工厂方法
 - **迁移脚本**：`scripts/backfill_daily_coverage.py`，一次性从现有 `price_bars` 回填 `daily_coverage`
 
@@ -79,21 +95,21 @@
 
 ## 当前实现边界
 
-- IBKR 与 Moomoo 真实 API 已接入，含能力探测、SQLite 持久化与 CLI 同步命令
-- yfinance 已接入作为回测第三候补，为 optional dep
-- 回测数据链路已实现（`fetch-bars` CLI），DB 缓存机制就位
+- IBKR 与 Moomoo 真实 API 已接入，含能力探测、SQLite 持久化与 CLI 同步命令；当前 bar 主动抓取路径固定使用 IBKR
+- yfinance 仍保留为 optional dep 和 legacy/test provider，但不再是当前默认 bar fallback
+- 回测数据链路已实现（`fetch-bars` CLI），当前默认 DB 缓存与抓取优先使用 IBKR 数据
 - IBKR 账户/持仓/挂单查询已实现并本地验证（paper 账户）
 - IBKR 下单/撤单已实现并本地验证（paper 账户，LMT 挂单→查询→撤单完整流程通过）
 - IBKR opening imbalance 已实现请求路径，但受 entitlement `10089` 限制，paper 环境不可用
 - IBKR 期权报价受 subscription `354` 限制，chain 发现可用，实时报价不可用
 - Moomoo opening imbalance 尚无已知公开 API，暂标记为不支持
-- bars/session metrics 来源尚未做 provider 级可配置切换
+- bars 来源当前固定为 IBKR；session VWAP 当前由 1m bar 计算
 - 趋势判定逻辑先用基础规则占位，便于后续替换为量化因子模型
 - 产品级需求说明已整理到 `docs/product-requirements.md`
 
 ## 推荐下一步
 
-1. 使 bars/session metrics 来源可在 IBKR 与 Moomoo 之间配置切换
+1. 继续验证 IBKR-only bar 数据完整性与 `bar_request_log` 重试行为
 2. 将 `IBKRAccountGateway` 和 `IBKRBrokerGateway` 接入 `app.py` / executor，实现完整实盘链路
 3. 若以 Moomoo 为 bar 主源，补充独立的 Moomoo bar gateway
 4. 将趋势分类逻辑替换为文档定义的完整开盘主导模型
