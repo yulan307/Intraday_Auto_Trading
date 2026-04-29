@@ -9,10 +9,15 @@ from intraday_auto_trading.app import (
     build_backtest_chain_validation_service,
     build_backtest_data_service,
     build_market_data_sync_service,
+    build_symbol_management_data_fetcher,
 )
 from intraday_auto_trading.config import load_settings
 from intraday_auto_trading.gateways.ibkr_account import IBKRAccountGateway
 from intraday_auto_trading.models import SyncStatus
+from intraday_auto_trading.services.symbol_management_data_fetcher import (
+    DEFAULT_END_DATE,
+    DEFAULT_START_DATE,
+)
 from intraday_auto_trading.symbol_manager import SelectedSymbolGroup, prompt_for_symbol_group, resolve_symbols_for_run
 
 
@@ -38,14 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     fetch_parser = subparsers.add_parser(
         "fetch-bars",
-        help="Fetch OHLCV bars: DB first, then ibkr/moomoo/yfinance fallback.",
+        help="Fetch OHLCV bars: DB first, then IB Gateway.",
     )
     fetch_parser.add_argument("--symbols", nargs="+", help="Optional symbol override.")
     fetch_parser.add_argument(
         "--bar-size",
-        choices=["1m", "15m"],
+        choices=["1m", "1d"],
         default="1m",
-        help="Bar size to fetch (default: 1m).",
+        help="Bar size to fetch (default: 1m). 15m bars are no longer fetched.",
     )
     fetch_parser.add_argument(
         "--ibkr-profile",
@@ -54,6 +59,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fetch_parser.add_argument("--start", help="Start datetime in ISO format, for example 2026-04-15T09:30.")
     fetch_parser.add_argument("--end", help="End datetime in ISO format, for example 2026-04-15T10:30.")
+
+    pool_fetch_parser = subparsers.add_parser(
+        "fetch-symbol-pool-data",
+        help="Fetch 1m and 1d bars for all symbol groups.",
+    )
+    pool_fetch_parser.add_argument(
+        "--ibkr-profile",
+        choices=["paper", "live"],
+        help="Override the configured IBKR profile for this run.",
+    )
+    pool_fetch_parser.add_argument(
+        "--start-date",
+        default=DEFAULT_START_DATE.isoformat(),
+        help="Start date in YYYY-MM-DD format. Defaults to 2026-03-31.",
+    )
+    pool_fetch_parser.add_argument(
+        "--end-date",
+        default=DEFAULT_END_DATE.isoformat(),
+        help="End date in YYYY-MM-DD format. Defaults to 2026-04-25.",
+    )
+    pool_fetch_parser.add_argument(
+        "--bar-providers",
+        nargs="+",
+        choices=["ibkr"],
+        help="Compatibility option. Bar fetch provider is fixed to ibkr.",
+    )
+    pool_fetch_parser.add_argument(
+        "--force-refresh",
+        action="store_true",
+        help="Ignore existing bar_request_log cache rows and fetch the requested window again.",
+    )
 
     validate_parser = subparsers.add_parser(
         "validate-backtest-chain",
@@ -121,6 +157,25 @@ def main() -> None:
         results = service.get_bars(symbols=symbols, bar_size=args.bar_size, start=start, end=end)
         print_fetch_results(results)
         if all(r.source == "none" for r in results):
+            raise SystemExit(1)
+        return
+
+    if args.command == "fetch-symbol-pool-data":
+        start_date = datetime.fromisoformat(args.start_date).date()
+        end_date = datetime.fromisoformat(args.end_date).date()
+        service = build_symbol_management_data_fetcher(
+            settings,
+            ibkr_profile_override=args.ibkr_profile,
+        )
+        summary = service.fetch_all_symbol_pool_data(
+            symbol_groups=settings.symbol_groups,
+            start_date=start_date,
+            end_date=end_date,
+            bar_providers=args.bar_providers,
+            force_refresh=args.force_refresh,
+        )
+        print_symbol_management_fetch_summary(summary)
+        if summary.errors:
             raise SystemExit(1)
         return
 
@@ -279,6 +334,27 @@ def print_backtest_validation_summary(summary) -> None:
             f"15m={result.fifteen_minute_bar_count} from {result.fifteen_minute_source}; "
             f"chart={chart_path}; 15m_chart={fifteen_minute_chart_path}; csv={result.option_csv_path}{suffix}"
         )
+
+
+def print_symbol_management_fetch_summary(summary) -> None:
+    print(
+        f"Symbol pool data fetch: {summary.start_date.isoformat()} -> "
+        f"{summary.end_date.isoformat()}"
+    )
+    print(f"Groups: {', '.join(summary.group_names)}")
+    print(f"Symbols: {', '.join(summary.symbols)}")
+    if summary.bar_providers:
+        print(f"Bar providers: {', '.join(summary.bar_providers)}")
+    print("results")
+    for symbol in summary.symbols:
+        print(
+            f"  {symbol:<6}: 1m={summary.one_minute_bar_counts[symbol]} "
+            f"1d={summary.daily_bar_counts[symbol]}"
+        )
+    if summary.errors:
+        print("errors")
+        for error in summary.errors:
+            print(f"  {error}")
 
 
 if __name__ == "__main__":

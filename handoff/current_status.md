@@ -7,6 +7,57 @@
 - Current branch: `feat/unified-bar-data-service` → merged to `main`
 - Remote status: pushed & merged
 
+## In Progress - 2026-04-28 Codex
+
+- Rebuild market-data storage around bar-only data for the current phase.
+- Back up the existing `data/market_data.sqlite` before creating a new database.
+- Replace `daily_coverage` semantics with `bar_request_log`, recording fetch windows, source, status, expected/actual bars, and messages.
+- Keep all stored bar timestamps as UTC-naive; exchange-local session windows must be converted with `ZoneInfo("America/New_York")` so EST/EDT changes are automatic.
+
+### Risks / Blockers
+
+- Existing `session_metrics`, `option_contracts`, `option_quotes`, `opening_imbalance`, and `trend_snapshots` data will remain only in the backup database for now.
+- Bar request cache records must be rebuilt after timezone fixes; stale `daily_coverage` rows must not influence new fetches.
+- Historical 1m data availability still depends on the provider; yfinance cannot provide older 1m ranges beyond its retention window.
+- The IBKR-only fetch must wait until IB Gateway is running and reachable; do not execute it before the user confirms Gateway startup.
+- Existing `no_data` rows created during provider failures may need cleanup or force refresh before the next VPN-off retry.
+- IBKR/HMDS errors such as "Trading TWS session is connected from a different IP address" should remain visible in `bar_request_log.message`.
+- Existing non-IBKR bar rows, if any, should be ignored by fixed-source reads unless an explicit legacy path is intentionally used.
+
+### Next Steps
+
+1. Replace the market-data schema with `symbols`, `price_bars`, and `bar_request_log`.
+2. Update `BarDataService` and repository methods to use `bar_request_log`.
+3. Make `fetch-symbol-pool-data` fetch bar data only for now.
+4. Add DST-aware tests for EST and EDT session windows and provider timestamp normalization.
+5. Run `fetch-symbol-pool-data --start-date 2026-02-01 --end-date 2026-04-27 --bar-providers ibkr` after IB Gateway is started.
+6. Add failed/error request-log status handling and daily bar provider implementations before the next data retry.
+
+## Completed - 2026-04-28 Codex
+
+- Backed up the previous database to `data/market_data.backup_20260428_before_bar_schema.sqlite`.
+- Recreated `data/market_data.sqlite` with only `symbols`, `price_bars`, and `bar_request_log`.
+- Replaced `daily_coverage` usage with `bar_request_log` in the unified bar fetch path.
+- Updated `fetch-symbol-pool-data` to fetch bar data only for the current phase.
+- Fixed provider timestamp normalization so stored bars are UTC-naive and session windows use `America/New_York` for automatic EST/EDT conversion.
+- Added DST tests for 2026-02-02 EST (`14:30-21:00 UTC`) and 2026-04-16 EDT (`13:30-20:00 UTC`).
+- Full test suite: `131 passed`.
+- Added `fetch-symbol-pool-data --bar-providers` so the next symbol-pool bar fetch can be restricted to IBKR Gateway only.
+- Added a `BarDataService.get_bars(..., source_order=...)` override for explicit per-run provider routing.
+- Added tests for IBKR-only source override and symbol-pool provider forwarding.
+- Full test suite after provider override: `133 passed`.
+- Hardened bar fetching after IBKR/HMDS failures: provider exceptions are now recorded as `failed` request logs with messages, not cached as `no_data`.
+- Added per-symbol fallback when provider batch calls fail, preventing one symbol failure from marking the whole day/group as no-data.
+- Added daily bar methods for IBKR, Moomoo, and yfinance gateways.
+- Stopped active market-data sync from writing direct or derived `15m` bars; `fetch-bars` CLI now accepts only `1m` and `1d`.
+- Added `fetch-symbol-pool-data --force-refresh` to ignore existing request-log rows when retrying after network/provider failures.
+- Full test suite after failure handling/daily-bar changes: `137 passed`.
+- Fixed current bar-fetch defaults to IB Gateway (`ibkr`) for `DataFetchPolicy`, symbol-pool fetches, `fetch-bars`, and backtest-chain validation.
+- Restricted `fetch-symbol-pool-data --bar-providers` to the compatibility value `ibkr`; programmatic non-IBKR bar provider requests now raise `ValueError`.
+- Added `services/bar_metrics.py` and derived `session_vwap`, official open, and last price from loaded `1m` bars in `TrendInputLoader`.
+- Updated default config and examples to `providers = ["ibkr"]`, `data_types = ["bars"]`, with direct/derived 15m disabled.
+- Full test suite after IBKR-only/VWAP consolidation: `143 passed`.
+
 ---
 
 ## What Was Just Completed

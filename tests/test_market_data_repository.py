@@ -4,14 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import sqlite3
 
-from intraday_auto_trading.models import (
-    MinuteBar,
-    OptionQuote,
-    Regime,
-    SessionMetrics,
-    SymbolInfo,
-    TrendSnapshot,
-)
+from intraday_auto_trading.models import BarRequestLog, MinuteBar, SymbolInfo
 from intraday_auto_trading.persistence.market_data_repository import SqliteMarketDataRepository
 
 
@@ -27,7 +20,7 @@ def test_repository_initializes_schema_and_persists_bars(tmp_path: Path) -> None
 
     bars = [
         MinuteBar(
-            timestamp=datetime(2026, 4, 15, 9, 30),
+            timestamp=datetime(2026, 4, 15, 13, 30),
             open=100.0,
             high=101.0,
             low=99.8,
@@ -35,7 +28,7 @@ def test_repository_initializes_schema_and_persists_bars(tmp_path: Path) -> None
             volume=1_000,
         ),
         MinuteBar(
-            timestamp=datetime(2026, 4, 15, 9, 31),
+            timestamp=datetime(2026, 4, 15, 13, 31),
             open=100.5,
             high=101.2,
             low=100.1,
@@ -50,15 +43,15 @@ def test_repository_initializes_schema_and_persists_bars(tmp_path: Path) -> None
     loaded = repository.load_price_bars(
         "SPY",
         "1m",
-        datetime(2026, 4, 15, 9, 30),
-        datetime(2026, 4, 15, 9, 31),
+        datetime(2026, 4, 15, 13, 30),
+        datetime(2026, 4, 15, 13, 31),
     )
 
     assert _row_count(db_path, "price_bars") == 2
     assert [bar.close for bar in loaded] == [100.5, 101.0]
 
 
-def test_repository_persists_symbol_metrics_quotes_and_trend_snapshot(tmp_path: Path) -> None:
+def test_repository_initializes_bar_only_schema_and_request_log(tmp_path: Path) -> None:
     db_path = tmp_path / "market_data.sqlite"
     repository = SqliteMarketDataRepository(db_path)
 
@@ -70,51 +63,34 @@ def test_repository_persists_symbol_metrics_quotes_and_trend_snapshot(tmp_path: 
             asset_type="ETF",
         )
     )
-    repository.save_session_metrics(
-        SessionMetrics(
+    repository.save_bar_request_log(
+        BarRequestLog(
             symbol="QQQ",
-            timestamp=datetime(2026, 4, 15, 10, 0),
+            bar_size="1m",
+            trade_date="2026-04-15",
             source="ibkr",
-            official_open=450.0,
-            last_price=452.5,
-            session_vwap=451.2,
+            request_start_ts=datetime(2026, 4, 15, 13, 30),
+            request_end_ts=datetime(2026, 4, 15, 20, 0),
+            status="success",
+            expected_bars=390,
+            actual_bars=390,
         )
     )
-    repository.save_option_quotes(
-        [
-            OptionQuote(
-                symbol="QQQ",
-                strike=450.0,
-                side="CALL",
-                bid=4.1,
-                ask=4.3,
-                last=4.2,
-                volume=150,
-                iv=0.22,
-                delta=0.51,
-                gamma=0.04,
-                expiry="2026-04-17",
-                snapshot_time=datetime(2026, 4, 15, 10, 0),
-            )
-        ],
-        source="moomoo",
-    )
-    repository.save_trend_snapshot(
-        TrendSnapshot(
-            symbol="QQQ",
-            eval_time=datetime(2026, 4, 15, 10, 0),
-            source="strategy",
-            regime=Regime.RANGE_TRACK_15M,
-            score=0.64,
-            reason="价格围绕 VWAP 震荡",
-            official_open=450.0,
-            last_price=452.5,
-            session_vwap=451.2,
-        )
-    )
+    loaded = repository.load_bar_request_log("QQQ", "1m", "2026-04-15")
 
     assert _row_count(db_path, "symbols") == 1
-    assert _row_count(db_path, "session_metrics") == 1
-    assert _row_count(db_path, "option_contracts") == 1
-    assert _row_count(db_path, "option_quotes") == 1
-    assert _row_count(db_path, "trend_snapshots") == 1
+    assert _row_count(db_path, "bar_request_log") == 1
+    assert loaded is not None
+    assert loaded.status == "success"
+    assert loaded.actual_bars == 390
+
+    with sqlite3.connect(db_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert {"symbols", "price_bars", "bar_request_log"}.issubset(tables)
+    assert "session_metrics" not in tables
+    assert "option_quotes" not in tables

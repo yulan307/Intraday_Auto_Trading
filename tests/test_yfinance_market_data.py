@@ -115,6 +115,22 @@ def test_get_direct_fifteen_minute_bars_delegates_correctly() -> None:
     assert captured == ["15m"]
 
 
+def test_get_daily_bars_delegates_correctly() -> None:
+    ts = datetime(2026, 4, 15)
+    captured: list[str] = []
+
+    class _CapturingBackend:
+        def fetch_bars(self, symbols, interval, start, end):
+            captured.append(interval)
+            return {"SPY": [_make_bar(ts)]}
+
+    gw = YfinanceMarketDataGateway(backend=_CapturingBackend())
+    bars = gw.get_daily_bars("SPY", datetime(2026, 4, 15), datetime(2026, 4, 16))
+
+    assert captured == ["1d"]
+    assert len(bars) == 1
+
+
 def test_real_backend_parses_single_symbol_multiindex_dataframe() -> None:
     import pandas as pd
 

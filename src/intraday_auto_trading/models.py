@@ -80,6 +80,25 @@ class OptionQuote:
 
 
 @dataclass(slots=True)
+class OptionFetchLog:
+    symbol: str
+    source: str
+    trade_date: str          # "YYYY-MM-DD"
+    status: str              # "success"|"no_data"|"permission"|"api_error"
+    message: str | None = None
+    quote_count: int = 0
+
+
+@dataclass(slots=True)
+class SessionFetchLog:
+    symbol: str
+    source: str
+    trade_date: str          # "YYYY-MM-DD"
+    status: str              # "success"|"no_data"|"permission"|"api_error"|"computed_from_bars"
+    message: str | None = None
+
+
+@dataclass(slots=True)
 class TrendInput:
     symbol: str
     eval_time: datetime
@@ -243,14 +262,46 @@ class SyncResult:
 
 
 @dataclass(slots=True)
-class DailyCoverage:
+class BarRequestLog:
     symbol: str
     bar_size: str
     trade_date: str   # "YYYY-MM-DD"
     source: str
+    request_start_ts: datetime
+    request_end_ts: datetime
+    status: str       # "success"|"partial"|"no_data"|"unavailable"|"error"
     expected_bars: int
     actual_bars: int
-    is_complete: bool
+    message: str | None = None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in {"success", "no_data"}
+
+
+@dataclass(slots=True)
+class Dev20SignalResult:
+    signal: str              # "wait" | "buy_now"
+    dev20: float | None      # (vwap - ema20) / vwap
+    s_dev20: float | None
+    ss_dev20: float | None
+    valley: float | None
+    s_valley: float | None
+    ema5: float | None
+    ema10: float | None
+    ema20: float | None
+    vwap: float | None
+    limit_price: float | None  # (prev.low + prev.close) / 2, only when buy_now
+
+
+@dataclass(slots=True)
+class IntradayOrderDecision:
+    action: str                   # "wait" | "place_order" | "exit" | "force_buy"
+    symbol: str | None = None
+    limit_price: float | None = None
+    dev20_at_order: float | None = None  # dev20_w (weighted) at order time
+    cancel_symbol: str | None = None     # symbol of existing order to cancel, if any
+    rationale: str = ""
 
 
 @dataclass(slots=True)

@@ -182,14 +182,11 @@ def test_market_data_sync_service_saves_multiple_data_types(tmp_path: Path) -> N
     statuses = {(result.data_type, result.status) for result in summary.results}
 
     assert (MarketDataType.BARS_1M, SyncStatus.SUCCESS) in statuses
-    assert (MarketDataType.BARS_15M_DIRECT, SyncStatus.SUCCESS) in statuses
-    assert (MarketDataType.BARS_15M_DERIVED, SyncStatus.SUCCESS) in statuses
-    assert (MarketDataType.OPENING_IMBALANCE, SyncStatus.SUCCESS) in statuses
-    assert (MarketDataType.OPTIONS, SyncStatus.SUCCESS) in statuses
-    assert _row_count(db_path, "price_bars") == 20
-    assert _row_count(db_path, "session_metrics") == 1
-    assert _row_count(db_path, "opening_imbalance") == 1
-    assert _row_count(db_path, "option_quotes") == 1
+    assert not any(result.data_type is MarketDataType.BARS_15M_DIRECT for result in summary.results)
+    assert not any(result.data_type is MarketDataType.BARS_15M_DERIVED for result in summary.results)
+    assert (MarketDataType.OPENING_IMBALANCE, SyncStatus.UNSUPPORTED) in statuses
+    assert (MarketDataType.OPTIONS, SyncStatus.UNSUPPORTED) in statuses
+    assert _row_count(db_path, "price_bars") == 16
 
 
 def test_market_data_sync_service_keeps_successful_bars_when_options_fail(tmp_path: Path) -> None:
@@ -213,6 +210,5 @@ def test_market_data_sync_service_keeps_successful_bars_when_options_fail(tmp_pa
     by_data_type = {result.data_type: result for result in summary.results}
 
     assert by_data_type[MarketDataType.BARS_1M].status is SyncStatus.SUCCESS
-    assert by_data_type[MarketDataType.OPTIONS].status is SyncStatus.FAILED
-    assert _row_count(db_path, "price_bars") == 20
-    assert _row_count(db_path, "option_quotes") == 0
+    assert by_data_type[MarketDataType.OPTIONS].status is SyncStatus.UNSUPPORTED
+    assert _row_count(db_path, "price_bars") == 16

@@ -5,6 +5,7 @@ from intraday_auto_trading.gateways.ibkr_market_data import IBKRMarketDataGatewa
 from intraday_auto_trading.gateways.moomoo_options import MoomooMarketDataGateway
 from intraday_auto_trading.models import CapabilityStatus, MinuteBar, OptionQuote, SessionMetrics
 from datetime import datetime
+from unittest.mock import patch
 
 
 class _FakeMoomooBackend:
@@ -20,6 +21,14 @@ class _FakeMoomooBackend:
         }
 
     def fetch_direct_fifteen_minute_bars(self, symbols, start, end):
+        return {
+            symbol: [
+                MinuteBar(timestamp=start, open=1, high=2, low=0.5, close=1.5, volume=100)
+            ]
+            for symbol in symbols
+        }
+
+    def fetch_daily_bars(self, symbols, start, end):
         return {
             symbol: [
                 MinuteBar(timestamp=start, open=1, high=2, low=0.5, close=1.5, volume=100)
@@ -62,7 +71,8 @@ def test_ibkr_gateway_reports_unavailable_without_runtime_backend() -> None:
         profile=IBKRProfileSettings(host="127.0.0.1", port=4002, client_id=9),
     )
 
-    capabilities = gateway.probe_capabilities()
+    with patch.object(MoomooMarketDataGateway, "_is_socket_reachable", return_value=True):
+        capabilities = gateway.probe_capabilities()
 
     assert capabilities.bars_1m.status in {CapabilityStatus.UNAVAILABLE, CapabilityStatus.UNTESTED}
     assert capabilities.options.status is CapabilityStatus.UNSUPPORTED
@@ -73,7 +83,8 @@ def test_moomoo_gateway_reports_disabled_when_not_enabled() -> None:
         MoomooSettings(enabled=False, host="127.0.0.1", port=11111),
     )
 
-    capabilities = gateway.probe_capabilities()
+    with patch.object(MoomooMarketDataGateway, "_is_socket_reachable", return_value=True):
+        capabilities = gateway.probe_capabilities()
 
     assert capabilities.options.status is CapabilityStatus.UNAVAILABLE
     assert capabilities.bars_1m.status is CapabilityStatus.UNAVAILABLE
@@ -85,11 +96,12 @@ def test_moomoo_gateway_reports_bars_available_with_backend() -> None:
         backend=_FakeMoomooBackend(),
     )
 
-    capabilities = gateway.probe_capabilities()
+    with patch.object(MoomooMarketDataGateway, "_is_socket_reachable", return_value=True):
+        capabilities = gateway.probe_capabilities()
 
-    assert capabilities.bars_1m.status is CapabilityStatus.AVAILABLE
-    assert capabilities.bars_15m_direct.status is CapabilityStatus.AVAILABLE
-    assert gateway.get_minute_bars("SPY", datetime(2026, 4, 16, 9, 30), datetime(2026, 4, 16, 10, 0))
-    metrics = gateway.get_session_metrics("SPY", datetime(2026, 4, 16, 10, 0))
+        assert capabilities.bars_1m.status is CapabilityStatus.AVAILABLE
+        assert capabilities.bars_15m_direct.status is CapabilityStatus.AVAILABLE
+        assert gateway.get_minute_bars("SPY", datetime(2026, 4, 16, 9, 30), datetime(2026, 4, 16, 10, 0))
+        metrics = gateway.get_session_metrics("SPY", datetime(2026, 4, 16, 10, 0))
     assert metrics is not None
     assert metrics.official_open == 1.0

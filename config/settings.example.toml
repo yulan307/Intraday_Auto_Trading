@@ -8,10 +8,11 @@ currency = "USD"
 
 [strategy]
 ema_fast_span = 5
+ema10_span = 10
 ema_slow_span = 20
-recent_high_lookback = 3
-force_buy_minutes_before_close = 15
-force_buy_last_minutes = 15
+dev20_window = 10       # Theil-Sen window for s_dev20
+s_dev20_window = 10     # Theil-Sen window for ss_dev20
+valley_window = 3       # Theil-Sen window for s_valley
 opening_review_cutoff = "10:00"
 
 [selection]
@@ -23,10 +24,10 @@ recent_fill_penalty_step = 0.5
 
 [data]
 market_data_db = "data/market_data.sqlite"
-providers = ["ibkr", "moomoo"]
-data_types = ["bars", "opening_imbalance", "options"]
-enable_direct_15m = true
-enable_derived_15m = true
+providers = ["ibkr"]
+data_types = ["bars"]
+enable_direct_15m = false
+enable_derived_15m = false
 
 [ibkr]
 default_profile = "paper"

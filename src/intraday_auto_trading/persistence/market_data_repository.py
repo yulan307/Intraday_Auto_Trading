@@ -5,10 +5,12 @@ from pathlib import Path
 
 from intraday_auto_trading.interfaces.repositories import MarketDataRepository
 from intraday_auto_trading.models import (
-    DailyCoverage,
+    BarRequestLog,
     MinuteBar,
     OpeningImbalance,
+    OptionFetchLog,
     OptionQuote,
+    SessionFetchLog,
     SessionMetrics,
     SymbolInfo,
     TrendSnapshot,
@@ -199,12 +201,14 @@ class SqliteMarketDataRepository(MarketDataRepository):
             connection.execute(
                 """
                 INSERT INTO session_metrics (
-                    symbol, ts, official_open, last_price, session_vwap, source, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    symbol, ts, official_open, last_price, session_vwap,
+                    source, fetch_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'success', ?)
                 ON CONFLICT(symbol, ts, source) DO UPDATE SET
                     official_open = excluded.official_open,
                     last_price = excluded.last_price,
-                    session_vwap = excluded.session_vwap
+                    session_vwap = excluded.session_vwap,
+                    fetch_status = 'success'
                 """,
                 (
                     metrics.symbol,
@@ -218,7 +222,10 @@ class SqliteMarketDataRepository(MarketDataRepository):
             )
 
     def load_session_metrics(self, symbol: str, at_time: datetime) -> SessionMetrics | None:
-        """Return the most-recent session_metrics row for symbol at or before at_time."""
+        """Return the most-recent session_metrics row for symbol at or before at_time.
+
+        Sentinel rows (source starting with '_FETCHLOG:') are excluded.
+        """
         with connect_sqlite(self.db_path) as connection:
             row = connection.execute(
                 """
@@ -226,6 +233,7 @@ class SqliteMarketDataRepository(MarketDataRepository):
                 FROM session_metrics
                 WHERE symbol = ?
                   AND ts <= ?
+                  AND source NOT LIKE '_FETCHLOG:%'
                 ORDER BY ts DESC
                 LIMIT 1
                 """,
@@ -243,6 +251,60 @@ class SqliteMarketDataRepository(MarketDataRepository):
             session_vwap=row["session_vwap"],
         )
 
+    def save_session_fetch_log(self, log: SessionFetchLog) -> None:
+        """Upsert a sentinel row in session_metrics to record a fetch attempt."""
+        sentinel_source = f"_FETCHLOG:{log.source}"
+        # Use midnight of trade_date as the timestamp for the sentinel row
+        sentinel_ts = to_storage_ts(datetime.fromisoformat(log.trade_date))
+        now = to_storage_ts(datetime.utcnow())
+        with connect_sqlite(self.db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO session_metrics (
+                    symbol, ts, official_open, last_price, session_vwap,
+                    source, fetch_status, fetch_message, created_at
+                ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
+                ON CONFLICT(symbol, ts, source) DO UPDATE SET
+                    fetch_status  = excluded.fetch_status,
+                    fetch_message = excluded.fetch_message
+                """,
+                (
+                    log.symbol,
+                    sentinel_ts,
+                    sentinel_source,
+                    log.status,
+                    (log.message or "")[:500] or None,
+                    now,
+                ),
+            )
+
+    def load_session_fetch_log(
+        self, symbol: str, source: str, trade_date: str
+    ) -> SessionFetchLog | None:
+        """Return the fetch-log sentinel for (symbol, source, trade_date), or None."""
+        sentinel_source = f"_FETCHLOG:{source}"
+        sentinel_ts = to_storage_ts(datetime.fromisoformat(trade_date))
+        with connect_sqlite(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT fetch_status, fetch_message
+                FROM session_metrics
+                WHERE symbol = ?
+                  AND ts = ?
+                  AND source = ?
+                """,
+                (symbol, sentinel_ts, sentinel_source),
+            ).fetchone()
+        if row is None:
+            return None
+        return SessionFetchLog(
+            symbol=symbol,
+            source=source,
+            trade_date=trade_date,
+            status=row["fetch_status"],
+            message=row["fetch_message"],
+        )
+
     def load_option_quotes(self, symbol: str, start: datetime, end: datetime) -> list[OptionQuote]:
         """Return all option quotes for symbol with snapshot_ts in [start, end]."""
         with connect_sqlite(self.db_path) as connection:
@@ -258,6 +320,7 @@ class SqliteMarketDataRepository(MarketDataRepository):
                 WHERE oq.symbol = ?
                   AND oq.snapshot_ts >= ?
                   AND oq.snapshot_ts <= ?
+                  AND oc.option_type != 'FETCH_LOG'
                 ORDER BY oq.snapshot_ts ASC
                 """,
                 (symbol, to_storage_ts(start), to_storage_ts(end)),
@@ -312,6 +375,59 @@ class SqliteMarketDataRepository(MarketDataRepository):
                 ),
             )
 
+    def save_option_fetch_log(self, log: OptionFetchLog) -> None:
+        """Upsert a sentinel row in option_contracts to record a fetch attempt."""
+        contract_id = f"_FETCHLOG:{log.symbol}:{log.trade_date}:{log.source}"
+        now = to_storage_ts(datetime.utcnow())
+        with connect_sqlite(self.db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO option_contracts (
+                    contract_id, symbol, expiry, strike, option_type,
+                    fetch_date, fetch_source, fetch_status, fetch_message,
+                    created_at, updated_at
+                ) VALUES (?, ?, '', 0, 'FETCH_LOG', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(contract_id) DO UPDATE SET
+                    fetch_status  = excluded.fetch_status,
+                    fetch_message = excluded.fetch_message,
+                    updated_at    = excluded.updated_at
+                """,
+                (
+                    contract_id,
+                    log.symbol,
+                    log.trade_date,
+                    log.source,
+                    log.status,
+                    (log.message or "")[:500] or None,
+                    now,
+                    now,
+                ),
+            )
+
+    def load_option_fetch_log(
+        self, symbol: str, source: str, trade_date: str
+    ) -> OptionFetchLog | None:
+        """Return the fetch-log sentinel row for (symbol, source, trade_date), or None."""
+        contract_id = f"_FETCHLOG:{symbol}:{trade_date}:{source}"
+        with connect_sqlite(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT fetch_status, fetch_message
+                FROM option_contracts
+                WHERE contract_id = ?
+                """,
+                (contract_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return OptionFetchLog(
+            symbol=symbol,
+            source=source,
+            trade_date=trade_date,
+            status=row["fetch_status"],
+            message=row["fetch_message"],
+        )
+
     def save_option_quotes(self, quotes: list[OptionQuote], source: str) -> None:
         if not quotes:
             return
@@ -322,8 +438,8 @@ class SqliteMarketDataRepository(MarketDataRepository):
                 """
                 INSERT INTO option_contracts (
                     contract_id, symbol, expiry, strike, option_type, exchange,
-                    multiplier, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    multiplier, fetch_source, fetch_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, ?)
                 ON CONFLICT(contract_id) DO UPDATE SET
                     symbol = excluded.symbol,
                     expiry = excluded.expiry,
@@ -331,6 +447,8 @@ class SqliteMarketDataRepository(MarketDataRepository):
                     option_type = excluded.option_type,
                     exchange = excluded.exchange,
                     multiplier = excluded.multiplier,
+                    fetch_source = excluded.fetch_source,
+                    fetch_status = 'success',
                     updated_at = excluded.updated_at
                 """,
                 [
@@ -342,6 +460,7 @@ class SqliteMarketDataRepository(MarketDataRepository):
                         quote.side.upper(),
                         quote.exchange,
                         quote.multiplier,
+                        source,
                         now,
                         now,
                     )
@@ -416,61 +535,74 @@ class SqliteMarketDataRepository(MarketDataRepository):
                 ),
             )
 
-    def save_daily_coverage(self, coverage: DailyCoverage) -> None:
+    def save_bar_request_log(self, log: BarRequestLog) -> None:
         with connect_sqlite(self.db_path) as connection:
             connection.execute(
                 """
-                INSERT INTO daily_coverage (
+                INSERT INTO bar_request_log (
                     symbol, bar_size, trade_date, source,
-                    expected_bars, actual_bars, is_complete, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    request_start_ts, request_end_ts, status,
+                    expected_bars, actual_bars, message,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(symbol, bar_size, trade_date) DO UPDATE SET
-                    source = excluded.source,
-                    expected_bars = excluded.expected_bars,
-                    actual_bars = excluded.actual_bars,
-                    is_complete = excluded.is_complete,
-                    updated_at = excluded.updated_at
+                    source           = excluded.source,
+                    request_start_ts = excluded.request_start_ts,
+                    request_end_ts   = excluded.request_end_ts,
+                    status           = excluded.status,
+                    expected_bars    = excluded.expected_bars,
+                    actual_bars      = excluded.actual_bars,
+                    message          = excluded.message,
+                    updated_at       = excluded.updated_at
                 """,
                 (
-                    coverage.symbol,
-                    coverage.bar_size,
-                    coverage.trade_date,
-                    coverage.source,
-                    coverage.expected_bars,
-                    coverage.actual_bars,
-                    int(coverage.is_complete),
+                    log.symbol,
+                    log.bar_size,
+                    log.trade_date,
+                    log.source,
+                    to_storage_ts(log.request_start_ts),
+                    to_storage_ts(log.request_end_ts),
+                    log.status,
+                    log.expected_bars,
+                    log.actual_bars,
+                    (log.message or "")[:500] or None,
+                    to_storage_ts(datetime.utcnow()),
                     to_storage_ts(datetime.utcnow()),
                 ),
             )
 
-    def load_daily_coverage(
+    def load_bar_request_log(
         self, symbol: str, bar_size: str, trade_date: str
-    ) -> DailyCoverage | None:
+    ) -> BarRequestLog | None:
         with connect_sqlite(self.db_path) as connection:
             row = connection.execute(
                 """
                 SELECT symbol, bar_size, trade_date, source,
-                       expected_bars, actual_bars, is_complete
-                FROM daily_coverage
+                       request_start_ts, request_end_ts, status,
+                       expected_bars, actual_bars, message
+                FROM bar_request_log
                 WHERE symbol = ? AND bar_size = ? AND trade_date = ?
                 """,
                 (symbol, bar_size, trade_date),
             ).fetchone()
         if row is None:
             return None
-        return DailyCoverage(
+        return BarRequestLog(
             symbol=row["symbol"],
             bar_size=row["bar_size"],
             trade_date=row["trade_date"],
             source=row["source"],
+            request_start_ts=datetime.fromisoformat(row["request_start_ts"]),
+            request_end_ts=datetime.fromisoformat(row["request_end_ts"]),
+            status=row["status"],
             expected_bars=row["expected_bars"],
             actual_bars=row["actual_bars"],
-            is_complete=bool(row["is_complete"]),
+            message=row["message"],
         )
 
-    def load_daily_coverage_range(
+    def load_bar_request_log_range(
         self, symbols: list[str], bar_size: str, start_date: str, end_date: str
-    ) -> dict[tuple[str, str], DailyCoverage]:
+    ) -> dict[tuple[str, str], BarRequestLog]:
         if not symbols:
             return {}
         placeholders = ",".join("?" * len(symbols))
@@ -478,25 +610,29 @@ class SqliteMarketDataRepository(MarketDataRepository):
             rows = connection.execute(
                 f"""
                 SELECT symbol, bar_size, trade_date, source,
-                       expected_bars, actual_bars, is_complete
-                FROM daily_coverage
+                       request_start_ts, request_end_ts, status,
+                       expected_bars, actual_bars, message
+                FROM bar_request_log
                 WHERE symbol IN ({placeholders})
                   AND bar_size = ?
                   AND trade_date BETWEEN ? AND ?
                 """,
                 (*symbols, bar_size, start_date, end_date),
             ).fetchall()
-        result: dict[tuple[str, str], DailyCoverage] = {}
+        result: dict[tuple[str, str], BarRequestLog] = {}
         for row in rows:
             key = (row["symbol"], row["trade_date"])
-            result[key] = DailyCoverage(
+            result[key] = BarRequestLog(
                 symbol=row["symbol"],
                 bar_size=row["bar_size"],
                 trade_date=row["trade_date"],
                 source=row["source"],
+                request_start_ts=datetime.fromisoformat(row["request_start_ts"]),
+                request_end_ts=datetime.fromisoformat(row["request_end_ts"]),
+                status=row["status"],
                 expected_bars=row["expected_bars"],
                 actual_bars=row["actual_bars"],
-                is_complete=bool(row["is_complete"]),
+                message=row["message"],
             )
         return result
 
@@ -505,4 +641,3 @@ class SqliteMarketDataRepository(MarketDataRepository):
             return quote.contract_id
         expiry = quote.expiry or "UNKNOWN"
         return f"{quote.symbol}:{expiry}:{quote.strike:.2f}:{quote.side.upper()}"
-

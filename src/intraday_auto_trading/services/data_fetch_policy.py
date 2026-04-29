@@ -17,15 +17,9 @@ class DataFetchPolicy:
         Defaults to False because no option data permission is currently provisioned.
     """
 
-    db_source_priority: list[str] = field(
-        default_factory=lambda: ["ibkr", "moomoo", "yfinance"]
-    )
-    live_source_order: list[str] = field(
-        default_factory=lambda: ["ibkr", "moomoo"]
-    )
-    history_source_order: list[str] = field(
-        default_factory=lambda: ["yfinance", "moomoo", "ibkr"]
-    )
+    db_source_priority: list[str] = field(default_factory=lambda: ["ibkr"])
+    live_source_order: list[str] = field(default_factory=lambda: ["ibkr"])
+    history_source_order: list[str] = field(default_factory=lambda: ["ibkr"])
     ibkr_options_enabled: bool = False
 
 

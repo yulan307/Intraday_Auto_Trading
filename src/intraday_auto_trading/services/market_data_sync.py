@@ -123,8 +123,6 @@ class MarketDataSyncService:
 
             self.repository.upsert_symbol(SymbolInfo(symbol=symbol))
             self.repository.save_price_bars(symbol, "1m", bars, source=gateway.provider_name)
-            metrics = self._resolve_session_metrics(gateway, symbol, end, bars)
-            self.repository.save_session_metrics(metrics)
             results.append(
                 SyncResult(
                     provider=gateway.provider_name,
@@ -132,26 +130,9 @@ class MarketDataSyncService:
                     data_type=MarketDataType.BARS_1M,
                     status=SyncStatus.SUCCESS,
                     saved_row_count=len(bars),
-                    message="Saved 1m bars and session metrics.",
+                    message="Saved 1m bars.",
                 )
             )
-
-            if self.enable_direct_15m:
-                results.append(self._sync_direct_fifteen_minute_bars(gateway, capabilities, symbol, start, end))
-
-            if self.enable_derived_15m:
-                derived_bars = self._aggregate_bars(bars, 15)
-                self.repository.save_price_bars(symbol, "15m", derived_bars, source=f"{gateway.provider_name}_derived")
-                results.append(
-                    SyncResult(
-                        provider=gateway.provider_name,
-                        symbol=symbol,
-                        data_type=MarketDataType.BARS_15M_DERIVED,
-                        status=SyncStatus.SUCCESS,
-                        saved_row_count=len(derived_bars),
-                        message="Saved locally derived 15m bars.",
-                    )
-                )
 
         return results
 
@@ -209,58 +190,16 @@ class MarketDataSyncService:
         symbols: Sequence[str],
         trade_date: date,
     ) -> list[SyncResult]:
-        capability = capabilities.opening_imbalance
-        if capability.status is not CapabilityStatus.AVAILABLE:
-            return [
-                SyncResult(
-                    provider=gateway.provider_name,
-                    symbol=symbol,
-                    data_type=MarketDataType.OPENING_IMBALANCE,
-                    status=_sync_status_for(capability.status),
-                    message=capability.message,
-                )
-                for symbol in symbols
-            ]
-
-        results: list[SyncResult] = []
-        for symbol in symbols:
-            try:
-                imbalance = gateway.get_opening_imbalance(symbol, trade_date)
-            except Exception as exc:
-                results.append(
-                    SyncResult(
-                        provider=gateway.provider_name,
-                        symbol=symbol,
-                        data_type=MarketDataType.OPENING_IMBALANCE,
-                        status=SyncStatus.FAILED,
-                        message=str(exc),
-                    )
-                )
-                continue
-            if imbalance is None:
-                results.append(
-                    SyncResult(
-                        provider=gateway.provider_name,
-                        symbol=symbol,
-                        data_type=MarketDataType.OPENING_IMBALANCE,
-                        status=SyncStatus.SKIPPED,
-                        message="Provider returned no opening imbalance data.",
-                    )
-                )
-                continue
-
-            self.repository.save_opening_imbalance(imbalance)
-            results.append(
-                SyncResult(
-                    provider=gateway.provider_name,
-                    symbol=symbol,
-                    data_type=MarketDataType.OPENING_IMBALANCE,
-                    status=SyncStatus.SUCCESS,
-                    saved_row_count=1,
-                    message="Saved opening imbalance snapshot.",
-                )
+        return [
+            SyncResult(
+                provider=gateway.provider_name,
+                symbol=symbol,
+                data_type=MarketDataType.OPENING_IMBALANCE,
+                status=SyncStatus.UNSUPPORTED,
+                message="Opening imbalance is not stored in the bar-only market-data schema.",
             )
-        return results
+            for symbol in symbols
+        ]
 
     def _sync_option_quotes(
         self,
@@ -269,61 +208,16 @@ class MarketDataSyncService:
         symbols: Sequence[str],
         at_time: datetime,
     ) -> list[SyncResult]:
-        capability = capabilities.options
-        if capability.status is not CapabilityStatus.AVAILABLE:
-            return [
-                SyncResult(
-                    provider=gateway.provider_name,
-                    symbol=symbol,
-                    data_type=MarketDataType.OPTIONS,
-                    status=_sync_status_for(capability.status),
-                    message=capability.message,
-                )
-                for symbol in symbols
-            ]
-
-        try:
-            quotes_by_symbol = self._fetch_option_quotes(gateway, symbols, at_time)
-        except Exception as exc:
-            return [
-                SyncResult(
-                    provider=gateway.provider_name,
-                    symbol=symbol,
-                    data_type=MarketDataType.OPTIONS,
-                    status=SyncStatus.FAILED,
-                    message=str(exc),
-                )
-                for symbol in symbols
-            ]
-        results: list[SyncResult] = []
-        for symbol in symbols:
-            quotes = quotes_by_symbol.get(symbol, [])
-            if not quotes:
-                results.append(
-                    SyncResult(
-                        provider=gateway.provider_name,
-                        symbol=symbol,
-                        data_type=MarketDataType.OPTIONS,
-                        status=SyncStatus.SKIPPED,
-                        message="Provider returned no option quotes.",
-                    )
-                )
-                continue
-
-            self.repository.upsert_symbol(SymbolInfo(symbol=symbol))
-            self.repository.save_option_quotes(quotes, source=gateway.provider_name)
-            results.append(
-                SyncResult(
-                    provider=gateway.provider_name,
-                    symbol=symbol,
-                    data_type=MarketDataType.OPTIONS,
-                    status=SyncStatus.SUCCESS,
-                    saved_row_count=len(quotes),
-                    message="Saved option contracts and quotes.",
-                )
+        return [
+            SyncResult(
+                provider=gateway.provider_name,
+                symbol=symbol,
+                data_type=MarketDataType.OPTIONS,
+                status=SyncStatus.UNSUPPORTED,
+                message="Options are not stored in the bar-only market-data schema.",
             )
-
-        return results
+            for symbol in symbols
+        ]
 
     def _fetch_minute_bars(
         self,

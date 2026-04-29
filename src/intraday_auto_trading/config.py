@@ -10,10 +10,11 @@ from intraday_auto_trading.symbol_manager import SymbolGroupRegistry, load_symbo
 @dataclass(slots=True)
 class StrategySettings:
     ema_fast_span: int
+    ema10_span: int
     ema_slow_span: int
-    recent_high_lookback: int
-    force_buy_minutes_before_close: int
-    force_buy_last_minutes: int
+    dev20_window: int
+    s_dev20_window: int
+    valley_window: int
     opening_review_cutoff: str
 
 
@@ -39,12 +40,12 @@ class DataSettings:
     market_data_db: str = "data/market_data.sqlite"
     providers: list[str] | None = None
     data_types: list[str] | None = None
-    enable_direct_15m: bool = True
-    enable_derived_15m: bool = True
+    enable_direct_15m: bool = False
+    enable_derived_15m: bool = False
 
     def __post_init__(self) -> None:
-        self.providers = [provider.lower() for provider in (self.providers or ["ibkr", "moomoo"])]
-        self.data_types = [data_type.lower() for data_type in (self.data_types or ["bars", "opening_imbalance", "options"])]
+        self.providers = [provider.lower() for provider in (self.providers or ["ibkr"])]
+        self.data_types = [data_type.lower() for data_type in (self.data_types or ["bars"])]
 
 
 @dataclass(slots=True)

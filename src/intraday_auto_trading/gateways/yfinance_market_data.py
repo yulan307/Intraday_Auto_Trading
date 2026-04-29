@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Protocol, Sequence
 
 from intraday_auto_trading.models import (
@@ -86,7 +86,11 @@ def _parse_flat_df(df, symbol: str) -> list[MinuteBar]:
             continue
         if any(v != v for v in (open_, high, low, close)):  # NaN check
             continue
-        timestamp = ts.to_pydatetime().replace(tzinfo=None)
+        raw_timestamp = ts.to_pydatetime()
+        if raw_timestamp.tzinfo is None:
+            timestamp = raw_timestamp
+        else:
+            timestamp = raw_timestamp.astimezone(timezone.utc).replace(tzinfo=None)
         bars.append(MinuteBar(timestamp=timestamp, open=open_, high=high, low=low, close=close, volume=volume))
     return bars
 
@@ -136,6 +140,16 @@ class YfinanceMarketDataGateway:
             return {}
         return self.backend.fetch_bars(symbols, "15m", start, end)
 
+    def get_daily_bars_batch(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]:
+        if self.backend is None:
+            return {}
+        return self.backend.fetch_bars(symbols, "1d", start, end)
+
     def get_option_quotes_batch(
         self,
         symbols: Sequence[str],
@@ -150,6 +164,9 @@ class YfinanceMarketDataGateway:
 
     def get_direct_fifteen_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
         return self.get_direct_fifteen_minute_bars_batch([symbol], start, end).get(symbol, [])
+
+    def get_daily_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        return self.get_daily_bars_batch([symbol], start, end).get(symbol, [])
 
     def get_option_quotes(self, symbol: str, at_time: datetime) -> list[OptionQuote]:
         return []

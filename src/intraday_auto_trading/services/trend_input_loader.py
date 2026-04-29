@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from intraday_auto_trading.interfaces.brokers import MarketDataGateway
 from intraday_auto_trading.interfaces.repositories import MarketDataRepository
 from intraday_auto_trading.models import MinuteBar, OptionQuote, SessionMetrics, TrendInput
+from intraday_auto_trading.services.bar_metrics import derive_session_metrics_from_minute_bars
 from intraday_auto_trading.services.data_fetch_policy import DataFetchPolicy, default_policy
 
 
@@ -100,63 +101,10 @@ class TrendInputLoader:
         eval_time: datetime,
         bars: list[MinuteBar],
     ) -> SessionMetrics:
-        db_metrics = self.repository.load_session_metrics(symbol, eval_time)
-        if db_metrics is not None:
-            official_open = (
-                db_metrics.official_open
-                if db_metrics.official_open is not None
-                else (bars[0].open if bars else None)
-            )
-            last_price = (
-                db_metrics.last_price
-                if db_metrics.last_price is not None
-                else (bars[-1].close if bars else None)
-            )
-            session_vwap = (
-                db_metrics.session_vwap
-                if db_metrics.session_vwap is not None
-                else (bars[-1].close if bars else None)
-            )
-            return SessionMetrics(
-                symbol=symbol,
-                timestamp=eval_time,
-                source=db_metrics.source,
-                official_open=official_open,
-                last_price=last_price,
-                session_vwap=session_vwap,
-            )
-
-        source_order = self._source_order(eval_time)
-        for source_name in source_order:
-            gateway = self.gateways.get(source_name)
-            if gateway is None:
-                continue
-            fetched = gateway.get_session_metrics(symbol, eval_time)
-            if fetched is not None:
-                self.repository.save_session_metrics(fetched)
-                return fetched
-
         if bars:
-            total_volume = sum(b.volume for b in bars)
-            vwap = (
-                bars[-1].close
-                if total_volume <= 0
-                else sum(b.close * b.volume for b in bars) / total_volume
-            )
-            return SessionMetrics(
-                symbol=symbol,
-                timestamp=eval_time,
-                source="derived",
-                official_open=bars[0].open,
-                last_price=bars[-1].close,
-                session_vwap=vwap,
-            )
+            return derive_session_metrics_from_minute_bars(symbol, eval_time, bars)
 
-        mode = "live" if self._is_live(eval_time) else "historical"
-        raise RuntimeError(
-            f"No session metrics for {symbol} at {eval_time} "
-            f"from any {mode} source and no bars to derive from"
-        )
+        raise RuntimeError(f"No 1m bars available to derive session metrics for {symbol} at {eval_time}")
 
     def _fetch_option_quotes(self, symbol: str, eval_time: datetime) -> list[OptionQuote]:
         quotes = self.repository.load_option_quotes(symbol, self.session_open, eval_time)

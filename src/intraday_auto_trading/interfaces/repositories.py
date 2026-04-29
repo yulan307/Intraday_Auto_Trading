@@ -4,11 +4,13 @@ from datetime import datetime
 from typing import Protocol, Sequence
 
 from intraday_auto_trading.models import (
-    DailyCoverage,
+    BarRequestLog,
     MinuteBar,
     OpeningImbalance,
+    OptionFetchLog,
     OptionQuote,
     Order,
+    SessionFetchLog,
     SessionMetrics,
     SymbolInfo,
     TrendSnapshot,
@@ -49,7 +51,19 @@ class MarketDataRepository(Protocol):
 
     def load_session_metrics(self, symbol: str, at_time: datetime) -> SessionMetrics | None: ...
 
+    def save_session_fetch_log(self, log: SessionFetchLog) -> None: ...
+
+    def load_session_fetch_log(
+        self, symbol: str, source: str, trade_date: str
+    ) -> SessionFetchLog | None: ...
+
     def load_option_quotes(self, symbol: str, start: datetime, end: datetime) -> list[OptionQuote]: ...
+
+    def save_option_fetch_log(self, log: OptionFetchLog) -> None: ...
+
+    def load_option_fetch_log(
+        self, symbol: str, source: str, trade_date: str
+    ) -> OptionFetchLog | None: ...
 
     def save_opening_imbalance(self, imbalance: OpeningImbalance) -> None: ...
 
@@ -57,15 +71,15 @@ class MarketDataRepository(Protocol):
 
     def save_trend_snapshot(self, snapshot: TrendSnapshot) -> None: ...
 
-    def save_daily_coverage(self, coverage: DailyCoverage) -> None: ...
+    def save_bar_request_log(self, log: BarRequestLog) -> None: ...
 
-    def load_daily_coverage(
+    def load_bar_request_log(
         self, symbol: str, bar_size: str, trade_date: str
-    ) -> DailyCoverage | None: ...
+    ) -> BarRequestLog | None: ...
 
-    def load_daily_coverage_range(
+    def load_bar_request_log_range(
         self, symbols: list[str], bar_size: str, start_date: str, end_date: str
-    ) -> dict[tuple[str, str], DailyCoverage]: ...
+    ) -> dict[tuple[str, str], BarRequestLog]: ...
 
 
 class BacktestAccountRepository(Protocol):
@@ -85,4 +99,3 @@ class BacktestAccountRepository(Protocol):
     def save_order(self, run_id: str, order: Order, strategy: str) -> None: ...
 
     def load_orders(self, run_id: str) -> list[Order]: ...
-

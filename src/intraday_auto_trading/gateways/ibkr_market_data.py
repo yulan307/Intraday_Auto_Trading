@@ -55,6 +55,13 @@ class IBKRBackend(Protocol):
         end: datetime,
     ) -> dict[str, list[MinuteBar]]: ...
 
+    def fetch_daily_bars(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]: ...
+
     def fetch_session_metrics(self, symbol: str, at_time: datetime) -> SessionMetrics | None: ...
 
     def fetch_opening_imbalance(self, symbol: str, trade_date: date) -> OpeningImbalance | None: ...
@@ -156,11 +163,15 @@ class _IBHistoricalDataApp(EWrapper, EClient):  # type: ignore[misc]
 
     def _parse_bar_time(self, raw_value: str | int) -> datetime:
         if isinstance(raw_value, int):
-            return datetime.fromtimestamp(raw_value, tz=timezone.utc).astimezone(self.exchange_timezone).replace(tzinfo=None)
+            return datetime.fromtimestamp(raw_value, tz=timezone.utc).replace(tzinfo=None)
         text = str(raw_value).strip()
+        if text.isdigit() and len(text) == 8:
+            localized = datetime.strptime(text, "%Y%m%d").replace(tzinfo=self.exchange_timezone)
+            return localized.astimezone(timezone.utc).replace(tzinfo=None)
         if text.isdigit():
-            return datetime.fromtimestamp(int(text), tz=timezone.utc).astimezone(self.exchange_timezone).replace(tzinfo=None)
-        return datetime.strptime(text, "%Y%m%d %H:%M:%S")
+            return datetime.fromtimestamp(int(text), tz=timezone.utc).replace(tzinfo=None)
+        localized = datetime.strptime(text, "%Y%m%d %H:%M:%S").replace(tzinfo=self.exchange_timezone)
+        return localized.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 class _IBMarketDataApp(EWrapper, EClient):  # type: ignore[misc]
@@ -250,6 +261,14 @@ class RealIBKRBackend:
         end: datetime,
     ) -> dict[str, list[MinuteBar]]:
         return self._fetch_bars(symbols, start, end, bar_size="15 mins")
+
+    def fetch_daily_bars(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]:
+        return self._fetch_bars(symbols, start, end, bar_size="1 day")
 
     def fetch_session_metrics(self, symbol: str, at_time: datetime) -> SessionMetrics | None:
         return None
@@ -383,8 +402,9 @@ class RealIBKRBackend:
         return contract
 
     def _format_end_datetime(self, value: datetime) -> str:
-        localized = value.replace(tzinfo=ZoneInfo(self.exchange_timezone))
-        return localized.astimezone(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
 
     def _duration_string(self, start: datetime, end: datetime) -> str:
         total_seconds = max(60, int((end - start).total_seconds()) + 60)
@@ -470,6 +490,9 @@ class IBKRMarketDataGateway:
     def get_direct_fifteen_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
         return self.get_direct_fifteen_minute_bars_batch([symbol], start, end).get(symbol, [])
 
+    def get_daily_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        return self.get_daily_bars_batch([symbol], start, end).get(symbol, [])
+
     def get_opening_imbalance(self, symbol: str, trade_date: date) -> OpeningImbalance | None:
         self._require_backend()
         return self.backend.fetch_opening_imbalance(symbol, trade_date)
@@ -494,6 +517,15 @@ class IBKRMarketDataGateway:
     ) -> dict[str, list[MinuteBar]]:
         self._require_backend()
         return self.backend.fetch_direct_fifteen_minute_bars(symbols, start, end)
+
+    def get_daily_bars_batch(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]:
+        self._require_backend()
+        return self.backend.fetch_daily_bars(symbols, start, end)
 
     def get_option_quotes_batch(
         self,

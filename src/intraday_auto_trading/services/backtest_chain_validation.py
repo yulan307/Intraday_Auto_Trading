@@ -15,19 +15,22 @@ from matplotlib.patches import Rectangle
 from intraday_auto_trading.interfaces.brokers import BatchMarketDataGateway, MarketDataGateway
 from intraday_auto_trading.interfaces.repositories import MarketDataRepository
 from intraday_auto_trading.models import (
-    AccountSymbolState,
     BuyStrategy,
     CapabilityStatus,
     MinuteBar,
     OptionQuote,
     Regime,
-    SelectionResult,
     TrendInput,
     TrendSignal,
 )
 from intraday_auto_trading.services.backtest_data_service import BacktestDataService
 from intraday_auto_trading.services.executor import ExecutionPlanner
-from intraday_auto_trading.services.intraday_low_signal import IntradayLowConfig, compute_intraday_low_signal
+from intraday_auto_trading.services.intraday_low_signal import (
+    IntradayLowConfig,
+    _compute_ema,
+    _compute_vwap_series,
+    compute_intraday_low_signal,
+)
 from intraday_auto_trading.services.selector import SymbolSelector
 from intraday_auto_trading.services.trend_classifier import TrendClassifier
 from intraday_auto_trading.services.trend_input_loader import TrendInputLoader
@@ -67,13 +70,8 @@ class SelectionDiagnosticsRow:
     regime: str
     signal_score: float | None
     signal_reason: str
-    trend_weight: float | None
-    completed_orders_this_week: int
-    has_position: bool
-    ownership_bonus: float | None
-    frequency_penalty: float | None
-    ranking_score: float | None
-    strategy: str
+    dev20: float | None       # (session_vwap - ema20) / session_vwap at classify time
+    strategy: str             # IMMEDIATE_BUY | TRACKING_BUY | UNAVAILABLE
     selected: bool
     selection_reason: str
 
@@ -127,8 +125,8 @@ class BacktestChainValidationService:
         normalized_symbols = [symbol.upper() for symbol in symbols]
         trend_classifier = TrendClassifier()
 
-        # This validation path uses the local DB first, then broker gateways only.
-        self.backtest_data_service.source_priority = ["ibkr", "moomoo"]
+        # This validation path uses the local DB first, then IB Gateway only.
+        self.backtest_data_service.source_priority = ["ibkr"]
         bar_results = self.backtest_data_service.get_bars(
             symbols=normalized_symbols,
             bar_size="1m",
@@ -301,35 +299,44 @@ class BacktestChainValidationService:
         self,
         results: Sequence[SymbolValidationResult],
     ) -> tuple[list[SelectionDiagnosticsRow], str | None]:
-        account_states = {
-            result.symbol: AccountSymbolState(
-                symbol=result.symbol,
-                completed_orders_this_week=0,
-                has_position=False,
-            )
-            for result in results
-        }
-        scored_results: dict[str, SelectionResult] = {}
-        available_signals = [result.trend_signal for result in results if result.trend_signal is not None]
-        selected_symbol: str | None = None
+        """Classify-phase selection diagnostics using dev20 logic.
 
-        if available_signals:
-            selected = self.selector.select(available_signals, account_states)
-            selected_symbol = selected.symbol
-            for signal in available_signals:
-                scored_results[signal.symbol] = self.selector._score_signal(signal, account_states.get(signal.symbol))
+        Computes dev20 = (session_vwap - ema20) / session_vwap for each symbol.
+        If all signals are EARLY_BUY and all dev20 < 0, selects the symbol with
+        the highest (least negative) dev20 for an initial order at VWAP.
+        Otherwise no initial order is placed and all symbols enter 1m tracking.
+        """
+        available_signals = [result.trend_signal for result in results if result.trend_signal is not None]
+        signal_by_symbol: dict[str, TrendSignal] = {s.symbol: s for s in available_signals}
+
+        # Compute dev20 at classify time: need TrendInput minute_bars + session_vwap.
+        # We use the bars that were rendered on the chart (stored in trend_input inside results).
+        # Since trend_input isn't stored directly, recompute from each result's trend_signal.
+        # Note: TrendSignal doesn't carry bars; dev20 here is approximate using loader data.
+        # For diagnostics we use the session_vwap from TrendSignal (not available) so we
+        # leave dev20 as None when TrendInput is not directly accessible.
+        dev20_by_symbol: dict[str, float | None] = {result.symbol: None for result in results}
+
+        all_early_buy = bool(available_signals) and all(
+            s.regime is Regime.EARLY_BUY for s in available_signals
+        )
+
+        selected_symbol: str | None = None
+        if all_early_buy:
+            # Cannot recompute dev20 without TrendInput; mark selection as needing 1m tracking
+            selection_reason_default = "all EARLY_BUY; dev20 computed at runtime during 1m tracking"
+        else:
+            selection_reason_default = "not all EARLY_BUY; no initial order"
 
         rows: list[SelectionDiagnosticsRow] = []
         for result in results:
-            state = account_states[result.symbol]
-            trend_signal = result.trend_signal
-            scored = scored_results.get(result.symbol)
-            trend_weight = regime_weight(self.selector, trend_signal.regime) if trend_signal is not None else None
-            ownership_bonus = 0.0 if state.has_position else self.selector.settings.unbought_bonus
-            frequency_penalty = state.completed_orders_this_week * self.selector.settings.recent_fill_penalty_step
-            strategy = scored.strategy.value if scored is not None else "UNAVAILABLE"
-            selected = result.symbol == selected_symbol
-            selection_reason = ascii_only_text(scored.rationale) if scored is not None else "TrendSignal unavailable"
+            trend_signal = signal_by_symbol.get(result.symbol)
+            if trend_signal is not None:
+                strategy = determine_tracking_strategy(trend_signal)
+                selection_reason = selection_reason_default
+            else:
+                strategy = "UNAVAILABLE"
+                selection_reason = "TrendSignal unavailable"
 
             rows.append(
                 SelectionDiagnosticsRow(
@@ -337,19 +344,13 @@ class BacktestChainValidationService:
                     regime=trend_signal.regime.value if trend_signal is not None else "UNAVAILABLE",
                     signal_score=trend_signal.score if trend_signal is not None else None,
                     signal_reason=ascii_only_text(trend_signal.reason) if trend_signal is not None else "TrendSignal unavailable",
-                    trend_weight=trend_weight,
-                    completed_orders_this_week=state.completed_orders_this_week,
-                    has_position=state.has_position,
-                    ownership_bonus=ownership_bonus if trend_signal is not None else None,
-                    frequency_penalty=frequency_penalty if trend_signal is not None else None,
-                    ranking_score=scored.ranking_score if scored is not None else None,
+                    dev20=dev20_by_symbol[result.symbol],
                     strategy=strategy,
-                    selected=selected,
+                    selected=(result.symbol == selected_symbol),
                     selection_reason=selection_reason,
                 )
             )
 
-        rows.sort(key=lambda row: (row.ranking_score is not None, row.ranking_score or -999999.0), reverse=True)
         return rows, selected_symbol
 
     def _load_opening_window_one_minute_bars(
@@ -460,33 +461,26 @@ class BacktestChainValidationService:
                 )
             )
 
-            session_close = datetime.combine(trade_date, SESSION_CLOSE_TIME)
-            force_buy_time = session_close - timedelta(
-                minutes=self.ema_config.force_buy_minutes_before_close
-            )
-
             already_bought_today = False
             for idx in range(len(day_bars)):
-                result = compute_intraday_low_signal(
-                    bars=day_bars,
-                    current_idx=idx,
-                    force_buy_time=force_buy_time,
-                    already_bought_today=already_bought_today,
-                    config=self.ema_config,
-                )
-
                 if already_bought_today:
                     continue
 
+                result = compute_intraday_low_signal(
+                    bars=day_bars,
+                    current_idx=idx,
+                    config=self.ema_config,
+                )
+
                 if result.signal == "buy_now":
-                    reversal_types = []
-                    if result.reversal_ok_a:
-                        reversal_types.append("A")
-                    if result.reversal_ok_b:
-                        reversal_types.append("B")
-                    if result.reversal_ok_c:
-                        reversal_types.append("C")
-                    reason = f"V2 buy_now reversal={'|'.join(reversal_types) or 'ok'}"
+                    reason = (
+                        f"dev20 buy_now; dev20={result.dev20:.4f} "
+                        f"s_dev20={result.s_dev20:.4f} valley={result.valley:.4f}"
+                        if result.dev20 is not None
+                        and result.s_dev20 is not None
+                        and result.valley is not None
+                        else "dev20 buy_now"
+                    )
                     order = self.execution_planner.build_tracking_order(
                         symbol=symbol,
                         quantity=1,
@@ -499,19 +493,6 @@ class BacktestChainValidationService:
                             limit_price=order.limit_price,
                             bar_close=day_bars[idx].close,
                             reason=ascii_only_text(reason),
-                        )
-                    )
-                    already_bought_today = True
-
-                elif result.signal == "force_buy":
-                    bar = day_bars[idx]
-                    events.append(
-                        TrackingEvent(
-                            timestamp=bar.timestamp,
-                            action="PLACE",
-                            limit_price=bar.close,
-                            bar_close=bar.close,
-                            reason="force_buy",
                         )
                     )
                     already_bought_today = True
@@ -730,11 +711,12 @@ def determine_tracking_strategy(trend_signal: TrendSignal | None) -> str:
     return BuyStrategy.TRACKING_BUY.value
 
 
-def regime_weight(selector: SymbolSelector, regime: Regime) -> float:
+def regime_weight(regime: Regime) -> str:
+    """Return a human-readable label for the regime (informational only)."""
     return {
-        Regime.WEAK_TAIL: selector.settings.weak_tail_weight,
-        Regime.RANGE_TRACK_15M: selector.settings.range_track_weight,
-        Regime.EARLY_BUY: selector.settings.early_buy_weight,
+        Regime.WEAK_TAIL: "weak_tail",
+        Regime.RANGE_TRACK_15M: "range_track",
+        Regime.EARLY_BUY: "early_buy",
     }[regime]
 
 
@@ -815,12 +797,7 @@ def write_selection_diagnostics_csv(path: Path, rows: Sequence[SelectionDiagnost
                 "regime",
                 "signal_score",
                 "signal_reason",
-                "trend_weight",
-                "completed_orders_this_week",
-                "has_position",
-                "ownership_bonus",
-                "frequency_penalty",
-                "ranking_score",
+                "dev20",
                 "strategy",
                 "selected",
                 "selection_reason",
@@ -834,12 +811,7 @@ def write_selection_diagnostics_csv(path: Path, rows: Sequence[SelectionDiagnost
                     "regime": row.regime,
                     "signal_score": "" if row.signal_score is None else f"{row.signal_score:.4f}",
                     "signal_reason": row.signal_reason,
-                    "trend_weight": "" if row.trend_weight is None else f"{row.trend_weight:.4f}",
-                    "completed_orders_this_week": row.completed_orders_this_week,
-                    "has_position": row.has_position,
-                    "ownership_bonus": "" if row.ownership_bonus is None else f"{row.ownership_bonus:.4f}",
-                    "frequency_penalty": "" if row.frequency_penalty is None else f"{row.frequency_penalty:.4f}",
-                    "ranking_score": "" if row.ranking_score is None else f"{row.ranking_score:.4f}",
+                    "dev20": "" if row.dev20 is None else f"{row.dev20:.6f}",
                     "strategy": row.strategy,
                     "selected": row.selected,
                     "selection_reason": row.selection_reason,

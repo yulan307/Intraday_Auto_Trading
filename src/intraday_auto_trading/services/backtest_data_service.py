@@ -24,7 +24,7 @@ class BacktestDataService:
     yfinance_gateway: YfinanceMarketDataGateway
     ibkr_gateway: MarketDataGateway | None = None
     moomoo_gateway: MarketDataGateway | None = None
-    source_priority: list[str] = field(default_factory=lambda: ["ibkr", "moomoo", "yfinance"])
+    source_priority: list[str] = field(default_factory=lambda: ["ibkr"])
 
     def get_bars(
         self,
@@ -37,8 +37,8 @@ class BacktestDataService:
 
         For each symbol:
         1. Try DB first (with source priority deduplication).
-        2. If missing, try live gateways in priority order (ibkr → moomoo).
-        3. Fall back to yfinance.
+        2. If missing, try gateways in priority order. Current default is IBKR-only.
+        3. Use yfinance only when it is explicitly included in source_priority.
         Fetched data is persisted to DB so subsequent calls use the cache.
         """
         results: list[FetchResult] = []
@@ -60,7 +60,7 @@ class BacktestDataService:
                 bar_count=len(bars),
             )
 
-        # Step 2: try ibkr and moomoo (in source_priority order)
+        # Step 2: try configured live gateways in source_priority order.
         live_gateways: dict[str, MarketDataGateway] = {}
         if self.ibkr_gateway is not None:
             live_gateways["ibkr"] = self.ibkr_gateway
@@ -83,18 +83,19 @@ class BacktestDataService:
                     message="written to db",
                 )
 
-        # Step 3: yfinance fallback
-        bars = self._fetch_from_yfinance(symbol, bar_size, start, end)
-        if bars:
-            self.repository.upsert_symbol(SymbolInfo(symbol=symbol))
-            self.repository.save_price_bars(symbol, bar_size, bars, "yfinance")
-            return FetchResult(
-                symbol=symbol,
-                bar_size=bar_size,
-                source="yfinance",
-                bar_count=len(bars),
-                message="written to db",
-            )
+        # Step 3: optional legacy yfinance fallback.
+        if "yfinance" in self.source_priority:
+            bars = self._fetch_from_yfinance(symbol, bar_size, start, end)
+            if bars:
+                self.repository.upsert_symbol(SymbolInfo(symbol=symbol))
+                self.repository.save_price_bars(symbol, bar_size, bars, "yfinance")
+                return FetchResult(
+                    symbol=symbol,
+                    bar_size=bar_size,
+                    source="yfinance",
+                    bar_count=len(bars),
+                    message="written to db",
+                )
 
         return FetchResult(symbol=symbol, bar_size=bar_size, source="none", bar_count=0)
 
@@ -121,14 +122,12 @@ class BacktestDataService:
                 return gateway.get_minute_bars(symbol, start, end)
             except Exception:
                 return []
-        elif bar_size == "15m":
-            cap_status = caps.bars_15m_direct.status
-            if cap_status != CapabilityStatus.AVAILABLE:
-                return []
+        elif bar_size == "1d":
             try:
-                if hasattr(gateway, "get_direct_fifteen_minute_bars_batch"):
-                    return gateway.get_direct_fifteen_minute_bars_batch([symbol], start, end).get(symbol, [])  # type: ignore[attr-defined]
-                return gateway.get_direct_fifteen_minute_bars(symbol, start, end)
+                if hasattr(gateway, "get_daily_bars_batch"):
+                    return gateway.get_daily_bars_batch([symbol], start, end).get(symbol, [])  # type: ignore[attr-defined]
+                if hasattr(gateway, "get_daily_bars"):
+                    return gateway.get_daily_bars(symbol, start, end)  # type: ignore[attr-defined]
             except Exception:
                 return []
         return []
@@ -137,8 +136,8 @@ class BacktestDataService:
         try:
             if bar_size == "1m":
                 return self.yfinance_gateway.get_minute_bars(symbol, start, end)
-            elif bar_size == "15m":
-                return self.yfinance_gateway.get_direct_fifteen_minute_bars(symbol, start, end)
+            elif bar_size == "1d":
+                return self.yfinance_gateway.get_daily_bars(symbol, start, end)
         except Exception:
             pass
         return []

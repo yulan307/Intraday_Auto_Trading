@@ -34,6 +34,8 @@ class MarketDataGateway(Protocol):
 
     def get_direct_fifteen_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]: ...
 
+    def get_daily_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]: ...
+
     def get_opening_imbalance(self, symbol: str, trade_date: date) -> OpeningImbalance | None: ...
 
     def get_option_quotes(self, symbol: str, at_time: datetime) -> list[OptionQuote]: ...
@@ -48,6 +50,13 @@ class BatchMarketDataGateway(MarketDataGateway, Protocol):
     ) -> dict[str, list[MinuteBar]]: ...
 
     def get_direct_fifteen_minute_bars_batch(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]: ...
+
+    def get_daily_bars_batch(
         self,
         symbols: Sequence[str],
         start: datetime,

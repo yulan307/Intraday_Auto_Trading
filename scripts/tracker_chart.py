@@ -27,7 +27,6 @@ from intraday_auto_trading.config import load_settings
 from intraday_auto_trading.models import MinuteBar
 from intraday_auto_trading.services.intraday_low_signal import (
     IntradayLowConfig,
-    IntradayLowSignalResult,
     compute_intraday_low_signal,
 )
 
@@ -42,9 +41,11 @@ OUTPUT_MIRROR = Path("/mnt/d/OneDrive/图片/Output")
 
 EMA_CFG = IntradayLowConfig(
     ema_fast_span=5,
+    ema10_span=10,
     ema_slow_span=20,
-    recent_high_lookback=3,
-    force_buy_minutes_before_close=15,
+    dev20_window=10,
+    s_dev20_window=10,
+    valley_window=3,
 )
 
 
@@ -110,32 +111,20 @@ def _simulate_v2_events(bars: Sequence[MinuteBar], trade_date: date) -> list[Tra
     if not bars:
         return []
 
-    session_close_dt = datetime.combine(trade_date, SESSION_CLOSE)
-    force_buy_time = session_close_dt - timedelta(minutes=EMA_CFG.force_buy_minutes_before_close)
-
     events: list[TrackerEvent] = []
     already_bought = False
 
     for idx in range(len(bars)):
-        result: IntradayLowSignalResult = compute_intraday_low_signal(
-            bars=bars,
-            current_idx=idx,
-            force_buy_time=force_buy_time,
-            already_bought_today=already_bought,
-            config=EMA_CFG,
-        )
-
         if already_bought:
             continue
 
+        result = compute_intraday_low_signal(
+            bars=bars,
+            current_idx=idx,
+            config=EMA_CFG,
+        )
+
         if result.signal == "buy_now":
-            rtypes = []
-            if result.reversal_ok_a:
-                rtypes.append("A")
-            if result.reversal_ok_b:
-                rtypes.append("B")
-            if result.reversal_ok_c:
-                rtypes.append("C")
             events.append(
                 TrackerEvent(
                     action="PLACE",
@@ -143,21 +132,7 @@ def _simulate_v2_events(bars: Sequence[MinuteBar], trade_date: date) -> list[Tra
                     limit_price=result.limit_price,
                     bar_close=bars[idx].close,
                     bar_low=bars[idx].low,
-                    reason="buy_now",
-                    reversal_types=rtypes,
-                )
-            )
-            already_bought = True
-
-        elif result.signal == "force_buy":
-            events.append(
-                TrackerEvent(
-                    action="FORCE",
-                    timestamp=bars[idx].timestamp,
-                    limit_price=bars[idx].close,
-                    bar_close=bars[idx].close,
-                    bar_low=bars[idx].low,
-                    reason="force_buy",
+                    reason=f"buy_now dev20={result.dev20:.4f}" if result.dev20 is not None else "buy_now",
                     reversal_types=[],
                 )
             )

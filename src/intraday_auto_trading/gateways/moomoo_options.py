@@ -6,6 +6,7 @@ from datetime import date, datetime
 import importlib.util
 import socket
 from typing import Any, Protocol, Sequence
+from zoneinfo import ZoneInfo
 
 from intraday_auto_trading.config import MoomooSettings
 from intraday_auto_trading.models import (
@@ -37,6 +38,13 @@ class MoomooBackend(Protocol):
         end: datetime,
     ) -> dict[str, list[MinuteBar]]: ...
 
+    def fetch_daily_bars(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]: ...
+
     def fetch_session_metrics(
         self,
         symbols: Sequence[str],
@@ -54,6 +62,7 @@ class MoomooBackend(Protocol):
 class RealMoomooBackend:
     settings: MoomooSettings
     snapshot_chunk_size: int = 200
+    exchange_timezone: str = "America/New_York"
 
     def probe(self) -> tuple[CapabilityStatus, str]:
         try:
@@ -85,6 +94,14 @@ class RealMoomooBackend:
         end: datetime,
     ) -> dict[str, list[MinuteBar]]:
         return self._fetch_history_bars(symbols, start, end, ktype_name="K_15M")
+
+    def fetch_daily_bars(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]:
+        return self._fetch_history_bars(symbols, start, end, ktype_name="K_DAY")
 
     def fetch_session_metrics(
         self,
@@ -243,7 +260,7 @@ class RealMoomooBackend:
     ) -> list[MinuteBar]:
         bars: list[MinuteBar] = []
         for _, row in dataframe.iterrows():
-            timestamp = self._parse_time_key(row.get("time_key"))
+            timestamp = self._parse_time_key(row.get("time_key"), self.exchange_timezone)
             if timestamp is None or not (start <= timestamp <= end):
                 continue
             open_price = self._as_float(row.get("open"))
@@ -303,13 +320,14 @@ class RealMoomooBackend:
             return fallback_time
 
     @staticmethod
-    def _parse_time_key(raw_value: Any) -> datetime | None:
+    def _parse_time_key(raw_value: Any, exchange_timezone: str = "America/New_York") -> datetime | None:
         raw_text = RealMoomooBackend._as_text(raw_value)
         if not raw_text:
             return None
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
             try:
-                return datetime.strptime(raw_text, fmt)
+                local_time = datetime.strptime(raw_text, fmt).replace(tzinfo=ZoneInfo(exchange_timezone))
+                return local_time.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
             except ValueError:
                 continue
         return None
@@ -399,6 +417,9 @@ class MoomooMarketDataGateway:
     def get_direct_fifteen_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
         return self.get_direct_fifteen_minute_bars_batch([symbol], start, end).get(symbol.upper(), [])
 
+    def get_daily_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        return self.get_daily_bars_batch([symbol], start, end).get(symbol.upper(), [])
+
     def get_opening_imbalance(self, symbol: str, trade_date: date) -> OpeningImbalance | None:
         return None
 
@@ -430,6 +451,15 @@ class MoomooMarketDataGateway:
     ) -> dict[str, list[MinuteBar]]:
         self._require_backend()
         return self.backend.fetch_direct_fifteen_minute_bars(symbols, start, end)
+
+    def get_daily_bars_batch(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[MinuteBar]]:
+        self._require_backend()
+        return self.backend.fetch_daily_bars(symbols, start, end)
 
     def _base_status(self) -> tuple[CapabilityStatus, str]:
         if not self.settings.enabled:

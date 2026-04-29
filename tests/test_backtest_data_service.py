@@ -92,10 +92,19 @@ class _FakeGateway:
         self.calls.append("get_direct_fifteen_minute_bars_batch")
         return {s: self._bars for s in symbols}
 
+    def get_daily_bars_batch(
+        self, symbols: Sequence[str], start: datetime, end: datetime
+    ) -> dict[str, list[MinuteBar]]:
+        self.calls.append("get_daily_bars_batch")
+        return {s: self._bars for s in symbols}
+
     def get_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
         return self._bars
 
     def get_direct_fifteen_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
+        return self._bars
+
+    def get_daily_bars(self, symbol: str, start: datetime, end: datetime) -> list[MinuteBar]:
         return self._bars
 
 
@@ -176,7 +185,12 @@ def test_ibkr_result_cached_in_db(tmp_path: Path) -> None:
 def test_falls_back_to_moomoo_when_ibkr_unavailable(tmp_path: Path) -> None:
     ibkr = _FakeGateway("ibkr", _bars(3), available=False)
     moomoo = _FakeGateway("moomoo", _bars(4))
-    service = _make_service(tmp_path, ibkr_gateway=ibkr, moomoo_gateway=moomoo)
+    service = _make_service(
+        tmp_path,
+        ibkr_gateway=ibkr,
+        moomoo_gateway=moomoo,
+        source_priority=["ibkr", "moomoo"],
+    )
     results = service.get_bars(["SPY"], "1m", START, END)
 
     assert results[0].source == "moomoo"
@@ -187,7 +201,12 @@ def test_falls_back_to_moomoo_when_ibkr_unavailable(tmp_path: Path) -> None:
 def test_falls_back_to_yfinance_when_live_unavailable(tmp_path: Path) -> None:
     ibkr = _FakeGateway("ibkr", [], available=False)
     yf_backend = _FakeYfinanceBackend({"SPY": _bars(6)})
-    service = _make_service(tmp_path, ibkr_gateway=ibkr, yfinance_backend=yf_backend)
+    service = _make_service(
+        tmp_path,
+        ibkr_gateway=ibkr,
+        yfinance_backend=yf_backend,
+        source_priority=["ibkr", "yfinance"],
+    )
     results = service.get_bars(["SPY"], "1m", START, END)
 
     assert results[0].source == "yfinance"
@@ -222,18 +241,22 @@ def test_db_source_priority_prefers_ibkr_over_yfinance(tmp_path: Path) -> None:
     assert results[0].source == "db:ibkr"
 
 
-def test_15m_bars_use_correct_batch_method(tmp_path: Path) -> None:
+def test_daily_bars_use_correct_batch_method(tmp_path: Path) -> None:
     ibkr = _FakeGateway("ibkr", _bars(2))
     service = _make_service(tmp_path, ibkr_gateway=ibkr)
-    results = service.get_bars(["SPY"], "15m", START, END)
+    results = service.get_bars(["SPY"], "1d", START, END)
 
     assert results[0].source == "ibkr"
-    assert "get_direct_fifteen_minute_bars_batch" in ibkr.calls
+    assert "get_daily_bars_batch" in ibkr.calls
 
 
 def test_multiple_symbols_handled_independently(tmp_path: Path) -> None:
     yf_backend = _FakeYfinanceBackend({"SPY": _bars(3), "QQQ": _bars(2)})
-    service = _make_service(tmp_path, yfinance_backend=yf_backend)
+    service = _make_service(
+        tmp_path,
+        yfinance_backend=yf_backend,
+        source_priority=["yfinance"],
+    )
     results = service.get_bars(["SPY", "QQQ"], "1m", START, END)
 
     by_symbol = {r.symbol: r for r in results}
